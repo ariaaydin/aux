@@ -14,7 +14,6 @@ app.use(express.json());
 const mongoURI =
   'mongodb+srv://ariaaydin:nT2LbleDQfZAv8fb@cluster0.hybd8.mongodb.net/Aux?retryWrites=true&w=majority';
 
-// Connect to MongoDB.
 mongoose
   .connect(mongoURI, { useNewUrlParser: true, useUnifiedTopology: true })
   .then(() => console.log('Connected to MongoDB'))
@@ -24,7 +23,6 @@ mongoose
 // User Endpoints
 // =========================
 
-// Define the user schema and model.
 const userSchema = new mongoose.Schema({
   spotifyId: { type: String, required: true, unique: true },
   username: { type: String, required: true },
@@ -100,7 +98,6 @@ app.put('/api/users/:spotifyId', async (req, res) => {
 // Song of the Day Endpoints
 // =========================
 
-// Define a SongOfTheDay schema and model.
 const songOfTheDaySchema = new mongoose.Schema({
   spotifyId: { type: String, required: true },
   trackId: { type: String, required: true },
@@ -112,13 +109,11 @@ const songOfTheDaySchema = new mongoose.Schema({
 
 const SongOfTheDay = mongoose.model('SongOfTheDay', songOfTheDaySchema, 'songOfTheDay');
 
-// POST endpoint: Submit Song of the Day.
 app.post('/api/songOfTheDay', async (req, res) => {
   const { spotifyId, trackId, trackName, trackArtist, trackImage } = req.body;
   if (!spotifyId || !trackId || !trackName || !trackArtist) {
     return res.status(400).json({ error: 'Missing required fields' });
   }
-  // Calculate today's boundaries using server local time.
   const now = new Date();
   const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   const endOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
@@ -139,7 +134,6 @@ app.post('/api/songOfTheDay', async (req, res) => {
   }
 });
 
-// GET endpoint: Retrieve today's Song of the Day for a user.
 app.get('/api/songOfTheDay', async (req, res) => {
   const { spotifyId } = req.query;
   if (!spotifyId) {

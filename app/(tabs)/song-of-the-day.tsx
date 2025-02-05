@@ -165,6 +165,7 @@ export default function SongOfTheDayScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
+    marginTop: 50,
     padding: 20,
     backgroundColor: '#fff',
   },

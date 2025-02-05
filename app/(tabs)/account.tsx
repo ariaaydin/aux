@@ -8,28 +8,68 @@ import { useRouter, useLocalSearchParams } from 'expo-router';
 const BACKEND_USER_ENDPOINT = 'http://localhost:3000/api/users';
 
 export default function AccountScreen() {
-  const params = useLocalSearchParams<{ spotifyId?: string; username?: string }>();
-  console.log('Account screen params:', params);
-  const { spotifyId, username: initialUsername } = params;
-  const [username, setUsername] = useState(initialUsername?.trim() || '');
+  // Try to get spotifyId from the route parameters.
+  const params = useLocalSearchParams<{ spotifyId?: string }>();
+  console.log('Account screen route params:', params);
+  
+  // Use the spotifyId from the route if available.
+  const [spotifyId, setSpotifyId] = useState<string | null>(params.spotifyId ?? null);
+  
+  // The username will always be pulled from the database.
+  const [username, setUsername] = useState<string>('');
   const [editing, setEditing] = useState(false);
   const router = useRouter();
 
+  // If spotifyId is not in the route, try to load it from SecureStore.
   useEffect(() => {
-    if (spotifyId && (!initialUsername || initialUsername.trim() === '')) {
+    if (!spotifyId) {
+      SecureStore.getItemAsync('spotify_id')
+        .then((storedId) => {
+          if (storedId) {
+            console.log('Retrieved spotifyId from SecureStore:', storedId);
+            setSpotifyId(storedId);
+          } else {
+            console.error('No spotifyId found in route or SecureStore');
+            Alert.alert('Error', 'No Spotify ID found. Please log in again.');
+            router.push('/');
+          }
+        })
+        .catch((err) => {
+          console.error('Error retrieving spotifyId from SecureStore:', err);
+          Alert.alert('Error', 'Failed to retrieve Spotify ID');
+          router.push('/');
+        });
+    }
+  }, [spotifyId, router]);
+
+  // Once we have a spotifyId, always fetch the user data from the database.
+  useEffect(() => {
+    if (spotifyId) {
       fetch(`${BACKEND_USER_ENDPOINT}/${spotifyId}`)
-        .then((res) => res.json())
+        .then((res) => {
+          if (!res.ok) {
+            throw new Error(`HTTP error! status: ${res.status}`);
+          }
+          return res.json();
+        })
         .then((data) => {
+          console.log('Fetched user data:', data);
           if (data.user) {
+            // Always set username from the database value.
             setUsername(data.user.username);
           } else {
             console.error('User not found in GET endpoint');
+            Alert.alert('Error', 'User not found');
           }
         })
-        .catch((err) => console.error('Error fetching user:', err));
+        .catch((err) => {
+          console.error('Error fetching user:', err);
+          Alert.alert('Error', 'Failed to load username');
+        });
     }
-  }, [spotifyId, initialUsername]);
+  }, [spotifyId]);
 
+  // Function to update username in the database.
   const saveUsername = () => {
     console.log('Saving username:', username, 'for spotifyId:', spotifyId);
     if (!spotifyId) {
@@ -42,13 +82,11 @@ export default function AccountScreen() {
       body: JSON.stringify({ username: username.trim() }),
     })
       .then(async (res) => {
-        const text = await res.text();
-        console.log('Raw response from PUT:', text);
-        try {
-          return JSON.parse(text);
-        } catch (e) {
-          throw new Error('Failed to parse JSON: ' + text);
+        if (!res.ok) {
+          const errorText = await res.text();
+          throw new Error(errorText || `HTTP error! status: ${res.status}`);
         }
+        return res.json();
       })
       .then((data) => {
         console.log('Update response:', data);
@@ -65,8 +103,10 @@ export default function AccountScreen() {
       });
   };
 
+  // Sign out: remove the token and spotify_id and navigate back to index.
   const logout = async () => {
     await SecureStore.deleteItemAsync('spotify_token');
+    await SecureStore.deleteItemAsync('spotify_id');
     router.push('/');
   };
 
@@ -74,7 +114,12 @@ export default function AccountScreen() {
     <View style={styles.container}>
       <Text style={styles.label}>Username:</Text>
       {editing ? (
-        <TextInput style={styles.input} value={username} onChangeText={setUsername} autoFocus />
+        <TextInput
+          style={styles.input}
+          value={username}
+          onChangeText={setUsername}
+          autoFocus
+        />
       ) : (
         <Text style={styles.username} onPress={() => setEditing(true)}>
           {username || 'No username'}

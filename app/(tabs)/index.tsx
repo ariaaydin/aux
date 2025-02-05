@@ -10,15 +10,19 @@ import { useFocusEffect } from '@react-navigation/native';
 
 const SPOTIFY_CLIENT_ID = '6496a3c69dd145e39107b1950f105774';
 const SPOTIFY_SCOPES = 'user-library-read';
+// Ensure this URI is whitelisted in your Spotify Dashboard.
 const SPOTIFY_REDIRECT_URI = 'exp://192.168.4.165:8081';
 
+// Replace with your backend URL if needed.
 const BACKEND_USER_ENDPOINT = 'http://localhost:3000/api/users';
 
 export default function IndexScreen() {
   const [token, setToken] = useState<string | null>(null);
   const [randomSong, setRandomSong] = useState<any>(null);
+  const [user, setUser] = useState<any>(null);
   const router = useRouter();
 
+  // Create the auth request.
   const [request, response, promptAsync] = useAuthRequest(
     {
       responseType: 'token',
@@ -31,12 +35,16 @@ export default function IndexScreen() {
     }
   );
 
+  // On mount, check for an existing token.
   useEffect(() => {
     SecureStore.getItemAsync('spotify_token').then((storedToken) => {
-      if (storedToken) setToken(storedToken);
+      if (storedToken) {
+        setToken(storedToken);
+      }
     });
   }, []);
 
+  // Re-check the token every time the screen comes into focus.
   useFocusEffect(
     useCallback(() => {
       SecureStore.getItemAsync('spotify_token').then((storedToken) => {
@@ -45,32 +53,46 @@ export default function IndexScreen() {
     }, [])
   );
 
+  // When Spotify responds, save the token and fetch the user profile.
   useEffect(() => {
     if (response?.type === 'success') {
       const { access_token } = response.params;
       if (access_token) {
         setToken(access_token);
         SecureStore.setItemAsync('spotify_token', access_token);
+
+        // Get the Spotify user's profile.
         fetch('https://api.spotify.com/v1/me', {
           headers: { Authorization: `Bearer ${access_token}` },
         })
           .then((res) => res.json())
           .then((userData) => {
-            // Create/verify user; we don't need to store the response here.
+            // Save the Spotify ID in SecureStore for later use.
+            SecureStore.setItemAsync('spotify_id', userData.id);
+            // When creating/verifying the user, set the username to the spotifyId.
             fetch(BACKEND_USER_ENDPOINT, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
                 spotifyId: userData.id,
-                username: userData.display_name || userData.id,
+                username: userData.id, // Set username equal to spotifyId on creation.
               }),
-            }).catch((err) => console.error('Backend user error:', err));
+            })
+              .then((res) => res.json())
+              .then((data) => {
+                if (data.user) {
+                  console.log('User returned from backend:', data.user);
+                  setUser(data.user);
+                }
+              })
+              .catch((err) => console.error('Backend user error:', err));
           })
           .catch((err) => console.error('Spotify profile error:', err));
       }
     }
   }, [response]);
 
+  // Fetch a random song from the user's saved tracks.
   const getRandomSong = async () => {
     if (!token) {
       Alert.alert('Not authenticated', 'Please connect to Spotify first.');
@@ -94,21 +116,25 @@ export default function IndexScreen() {
     }
   };
 
+  // (Optional) A logout function.
   const logout = async () => {
     await SecureStore.deleteItemAsync('spotify_token');
     setToken(null);
     setRandomSong(null);
+    setUser(null);
   };
 
   return (
     <View style={styles.container}>
       {!token ? (
+        // Not connected: show Connect button.
         <Button
           title="Connect to Spotify"
           onPress={() => promptAsync()}
           disabled={!request}
         />
       ) : (
+        // Connected: show track functions and the Account button.
         <View style={styles.authContainer}>
           <View style={styles.buttonRow}>
             <Button title="Fetch Random Song" onPress={getRandomSong} />
@@ -116,7 +142,9 @@ export default function IndexScreen() {
           {randomSong && (
             <View style={styles.webViewContainer}>
               <WebView
-                source={{ uri: `https://open.spotify.com/embed/track/${randomSong.id}` }}
+                source={{
+                  uri: `https://open.spotify.com/embed/track/${randomSong.id}`,
+                }}
                 style={styles.webView}
                 allowsInlineMediaPlayback
               />
