@@ -99,12 +99,23 @@ app.put('/api/users/:spotifyId', async (req, res) => {
 // =========================
 
 const songOfTheDaySchema = new mongoose.Schema({
-  spotifyId: { type: String, required: true },
+  spotifyId: { type: String, required: true }, // owner who posted the song
   trackId: { type: String, required: true },
   trackName: { type: String, required: true },
   trackArtist: { type: String, required: true },
   trackImage: { type: String },
   createdAt: { type: Date, default: Date.now },
+  likes: { type: [String], default: [] }, // store array of user IDs who liked the post
+  comments: {
+    type: [
+      {
+        user: { type: String, required: true }, // the commenting user's ID
+        text: { type: String, required: true },
+        createdAt: { type: Date, default: Date.now },
+      },
+    ],
+    default: [],
+  },
 });
 
 const SongOfTheDay = mongoose.model('SongOfTheDay', songOfTheDaySchema, 'songOfTheDay');
@@ -157,6 +168,66 @@ app.get('/api/songOfTheDay', async (req, res) => {
     return res.status(500).json({ error: 'Server error' });
   }
 });
+
+// POST endpoint to toggle a like for a Song of the Day
+app.post('/api/songOfTheDay/:id/like', async (req, res) => {
+  const songId = req.params.id; // This is the _id of the SongOfTheDay document
+  const { spotifyId } = req.body; // the user who is liking the song
+
+  if (!spotifyId) {
+    return res.status(400).json({ error: 'Missing spotifyId in request body' });
+  }
+
+  try {
+    const song = await SongOfTheDay.findById(songId);
+    if (!song) {
+      return res.status(404).json({ error: 'Song of the Day not found' });
+    }
+    
+    // Check if the user already liked the song
+    const alreadyLiked = song.likes.includes(spotifyId);
+    if (alreadyLiked) {
+      // Remove the like (unlike)
+      song.likes = song.likes.filter(id => id !== spotifyId);
+    } else {
+      // Add the like
+      song.likes.push(spotifyId);
+    }
+    
+    await song.save();
+    return res.status(200).json({ message: 'Like toggled', likes: song.likes });
+  } catch (err) {
+    console.error('Error toggling like:', err);
+    return res.status(500).json({ error: 'Server error toggling like' });
+  }
+});
+
+// POST endpoint to add a comment to a Song of the Day
+app.post('/api/songOfTheDay/:id/comment', async (req, res) => {
+  const songId = req.params.id; // The SongOfTheDay document _id
+  const { spotifyId, text } = req.body; // Commenting user's id and comment text
+
+  if (!spotifyId || !text) {
+    return res.status(400).json({ error: 'Missing spotifyId or text in request body' });
+  }
+
+  try {
+    const song = await SongOfTheDay.findById(songId);
+    if (!song) {
+      return res.status(404).json({ error: 'Song of the Day not found' });
+    }
+    
+    // Append the new comment to the comments array
+    song.comments.push({ user: spotifyId, text });
+    await song.save();
+    
+    return res.status(201).json({ message: 'Comment added', comments: song.comments });
+  } catch (err) {
+    console.error('Error adding comment:', err);
+    return res.status(500).json({ error: 'Server error adding comment' });
+  }
+});
+
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
