@@ -1,5 +1,3 @@
-// app/index.tsx
-
 import React, { useEffect, useState, useCallback } from 'react';
 import { View, Button, Alert, StyleSheet } from 'react-native';
 import * as SecureStore from 'expo-secure-store';
@@ -11,7 +9,7 @@ import { useFocusEffect } from '@react-navigation/native';
 const SPOTIFY_CLIENT_ID = '6496a3c69dd145e39107b1950f105774';
 const SPOTIFY_SCOPES = 'user-library-read';
 // Ensure this URI is whitelisted in your Spotify Dashboard.
-const SPOTIFY_REDIRECT_URI = 'exp://192.168.4.165:8081';
+const SPOTIFY_REDIRECT_URI = 'exp://10.101.155.121:8081';
 
 // Replace with your backend URL if needed.
 const BACKEND_USER_ENDPOINT = 'http://localhost:3000/api/users';
@@ -92,6 +90,14 @@ export default function IndexScreen() {
     }
   }, [response]);
 
+  // **NEW**: Redirect if a token exists so logged-in users cannot use this login page.
+  useEffect(() => {
+    if (token) {
+      // Replace '/song-of-the-day' with your main app's initial route.
+      router.replace('/song-of-the-day');
+    }
+  }, [token]);
+
   // Fetch a random song from the user's saved tracks.
   const getRandomSong = async () => {
     if (!token) {
@@ -134,7 +140,8 @@ export default function IndexScreen() {
           disabled={!request}
         />
       ) : (
-        // Connected: show track functions and the Account button.
+        // In theory, this block won’t be seen because of the redirect,
+        // but the detailed logic remains here.
         <View style={styles.authContainer}>
           <View style={styles.buttonRow}>
             <Button title="Fetch Random Song" onPress={getRandomSong} />

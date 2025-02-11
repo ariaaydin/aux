@@ -1,39 +1,53 @@
-import { DarkTheme, DefaultTheme, ThemeProvider } from '@react-navigation/native';
-import { useFonts } from 'expo-font';
+// app/_layout.tsx
+import React, { useEffect, useState } from 'react';
 import { Stack } from 'expo-router';
-import * as SplashScreen from 'expo-splash-screen';
-import { StatusBar } from 'expo-status-bar';
-import { useEffect } from 'react';
-import 'react-native-reanimated';
-
+import { DarkTheme, DefaultTheme, ThemeProvider } from '@react-navigation/native';
 import { useColorScheme } from '@/hooks/useColorScheme';
+import * as SecureStore from 'expo-secure-store';
+import * as SplashScreen from 'expo-splash-screen';
 
-// Prevent the splash screen from auto-hiding before asset loading is complete.
+// Prevent the splash screen from auto-hiding until authentication is checked.
 SplashScreen.preventAutoHideAsync();
 
 export default function RootLayout() {
   const colorScheme = useColorScheme();
-  const [loaded] = useFonts({
-    SpaceMono: require('../assets/fonts/SpaceMono-Regular.ttf'),
-  });
+  const [isAuthChecked, setIsAuthChecked] = useState(false);
+  const [isLoggedIn, setIsLoggedIn] = useState(false);
 
+  // Check for the Spotify token to determine if the user is logged in.
   useEffect(() => {
-    if (loaded) {
-      SplashScreen.hideAsync();
+    async function checkAuth() {
+      try {
+        const token = await SecureStore.getItemAsync('spotify_token');
+        setIsLoggedIn(!!token);
+      } catch (error) {
+        console.error('Error checking auth token:', error);
+      } finally {
+        setIsAuthChecked(true);
+        SplashScreen.hideAsync();
+      }
     }
-  }, [loaded]);
+    checkAuth();
+  }, []);
 
-  if (!loaded) {
+  // While authentication is being checked, render nothing or a loading indicator.
+  if (!isAuthChecked) {
     return null;
   }
 
   return (
     <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
       <Stack>
-        <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
-        <Stack.Screen name="+not-found" />
+        { !isLoggedIn ? (
+          // When logged out, show the authentication flow.
+          <Stack.Screen name="auth" options={{ headerShown: false }} />
+        ) : (
+          // When logged in, show the main tabs (which conditionally render SOTD vs. Feed/Account).
+          <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
+        )}
+        {/* A catch-all "not found" screen */}
+        <Stack.Screen name="+not-found" options={{ title: 'Not Found' }} />
       </Stack>
-      <StatusBar style="auto" />
     </ThemeProvider>
   );
 }

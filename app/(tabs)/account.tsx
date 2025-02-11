@@ -1,85 +1,79 @@
-// app/(tabs)/account.tsx
-
 import React, { useState, useEffect } from 'react';
-import { View, Text, Button, StyleSheet, TextInput, Alert } from 'react-native';
+import {
+  View,
+  Text,
+  StyleSheet,
+  TextInput,
+  Keyboard,
+  TouchableOpacity,
+  TouchableWithoutFeedback,
+  Alert,
+} from 'react-native';
 import * as SecureStore from 'expo-secure-store';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 
 const BACKEND_USER_ENDPOINT = 'http://localhost:3000/api/users';
 
 export default function AccountScreen() {
-  // Try to get spotifyId from the route parameters.
+  // Retrieve spotifyId from the route or SecureStore.
   const params = useLocalSearchParams<{ spotifyId?: string }>();
-  console.log('Account screen route params:', params);
-  
-  // Use the spotifyId from the route if available.
   const [spotifyId, setSpotifyId] = useState<string | null>(params.spotifyId ?? null);
-  
-  // The username will always be pulled from the database.
   const [username, setUsername] = useState<string>('');
   const [editing, setEditing] = useState(false);
   const router = useRouter();
 
-  // If spotifyId is not in the route, try to load it from SecureStore.
   useEffect(() => {
     if (!spotifyId) {
       SecureStore.getItemAsync('spotify_id')
         .then((storedId) => {
           if (storedId) {
-            console.log('Retrieved spotifyId from SecureStore:', storedId);
             setSpotifyId(storedId);
           } else {
-            console.error('No spotifyId found in route or SecureStore');
             Alert.alert('Error', 'No Spotify ID found. Please log in again.');
-            router.push('/');
+            router.push('/(tabs)/account');
           }
         })
-        .catch((err) => {
-          console.error('Error retrieving spotifyId from SecureStore:', err);
+        .catch(() => {
           Alert.alert('Error', 'Failed to retrieve Spotify ID');
           router.push('/');
         });
     }
   }, [spotifyId, router]);
 
-  // Once we have a spotifyId, always fetch the user data from the database.
   useEffect(() => {
     if (spotifyId) {
       fetch(`${BACKEND_USER_ENDPOINT}/${spotifyId}`)
         .then((res) => {
-          if (!res.ok) {
-            throw new Error(`HTTP error! status: ${res.status}`);
-          }
+          if (!res.ok) throw new Error(`HTTP error! status: ${res.status}`);
           return res.json();
         })
         .then((data) => {
-          console.log('Fetched user data:', data);
           if (data.user) {
-            // Always set username from the database value.
             setUsername(data.user.username);
           } else {
-            console.error('User not found in GET endpoint');
             Alert.alert('Error', 'User not found');
           }
         })
-        .catch((err) => {
-          console.error('Error fetching user:', err);
+        .catch(() => {
           Alert.alert('Error', 'Failed to load username');
         });
     }
   }, [spotifyId]);
 
-  // Function to update username in the database.
   const saveUsername = () => {
-    console.log('Saving username:', username, 'for spotifyId:', spotifyId);
     if (!spotifyId) {
-      Alert.alert('Error', 'Missing spotifyId');
+      Alert.alert('Error', 'Missing Spotify ID');
       return;
     }
-    fetch(`${BACKEND_USER_ENDPOINT}/${spotifyId.trim()}`, {
+    const trimmedUsername = username.trim();
+    if (!trimmedUsername) {
+      Alert.alert('Error', 'Username cannot be empty');
+      return;
+    }
+    fetch(`${BACKEND_USER_ENDPOINT}/${spotifyId}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username: username.trim() }),
+      body: JSON.stringify({ username: trimmedUsername }),
     })
       .then(async (res) => {
         if (!res.ok) {
@@ -89,75 +83,99 @@ export default function AccountScreen() {
         return res.json();
       })
       .then((data) => {
-        console.log('Update response:', data);
         if (data.user) {
-          Alert.alert('Username updated successfully');
           setEditing(false);
+          Keyboard.dismiss();
         } else {
-          Alert.alert('Failed to update username', data.error || '');
+          Alert.alert('Error', 'Failed to update username');
         }
       })
       .catch((err) => {
-        console.error('Error updating username:', err);
-        Alert.alert('Error updating username', err.message);
+        Alert.alert('Error', err.message);
       });
   };
 
-  // Sign out: remove the token and spotify_id and navigate back to index.
   const logout = async () => {
     await SecureStore.deleteItemAsync('spotify_token');
     await SecureStore.deleteItemAsync('spotify_id');
-    router.push('/');
+    router.replace('/');
   };
 
   return (
-    <View style={styles.container}>
-      <Text style={styles.label}>Username:</Text>
-      {editing ? (
-        <TextInput
-          style={styles.input}
-          value={username}
-          onChangeText={setUsername}
-          autoFocus
-        />
-      ) : (
-        <Text style={styles.username} onPress={() => setEditing(true)}>
-          {username || 'No username'}
-        </Text>
-      )}
-      {editing && <Button title="Save" onPress={saveUsername} />}
-      <View style={styles.spacer} />
-      <Button title="Sign Out" onPress={logout} color="red" />
-      <View style={styles.spacer} />
-      <Button title="Back" onPress={() => router.back()} />
-    </View>
+    <TouchableWithoutFeedback onPress={() => Keyboard.dismiss()}>
+      <View style={styles.container}>
+        <Text style={styles.header}>Account Settings</Text>
+        <View style={styles.inputContainer}>
+          <Text style={styles.label}>Username</Text>
+          {editing ? (
+            <TextInput
+              style={styles.input}
+              value={username}
+              onChangeText={setUsername}
+              autoFocus
+              onBlur={saveUsername}
+              onSubmitEditing={saveUsername}
+              returnKeyType="done"
+            />
+          ) : (
+            <TouchableOpacity onPress={() => setEditing(true)}>
+              <Text style={styles.username}>{username || 'No username'}</Text>
+            </TouchableOpacity>
+          )}
+        </View>
+        <TouchableOpacity style={styles.button} onPress={logout}>
+          <Text style={styles.buttonText}>Sign Out</Text>
+        </TouchableOpacity>
+      </View>
+    </TouchableWithoutFeedback>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { 
-    flex: 1, 
-    padding: 20, 
-    alignItems: 'center', 
-    backgroundColor: '#fff' 
+  container: {
+    flex: 1,
+    backgroundColor: '#fff', // white background
+    padding: 20,
+    justifyContent: 'center',
   },
-  label: { 
-    fontSize: 16, 
-    marginBottom: 10 
+  header: {
+    fontSize: 28,
+    fontWeight: '600',
+    color: '#00FFFF', // cyan accent
+    textAlign: 'center',
+    marginBottom: 40,
   },
-  username: { 
-    fontSize: 18, 
-    marginBottom: 10 
+  inputContainer: {
+    marginBottom: 40,
+  },
+  label: {
+    fontSize: 16,
+    color: '#00FFFF',
+    marginBottom: 8,
+  },
+  username: {
+    fontSize: 20,
+    color: '#00FFFF',
+    paddingVertical: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: '#00FFFF',
   },
   input: {
-    borderWidth: 1,
-    borderColor: '#ccc',
-    width: '100%',
-    padding: 10,
-    fontSize: 18,
-    marginBottom: 10,
+    fontSize: 20,
+    color: '#00FFFF',
+    paddingVertical: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: '#00FFFF',
   },
-  spacer: { 
-    height: 20 
+  button: {
+    backgroundColor: '#00FFFF',
+    paddingVertical: 12,
+    borderRadius: 8,
+    alignItems: 'center',
+  },
+  buttonText: {
+    color: '#fff', // white text on cyan button
+    fontSize: 18,
+    fontWeight: '600',
   },
 });
