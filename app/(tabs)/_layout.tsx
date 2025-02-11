@@ -68,6 +68,7 @@ export default function TabLayout() {
     headerShown: false,
     tabBarButton: HapticTab,
     tabBarBackground: TabBarBackground,
+    
     tabBarStyle: Platform.select({
       ios: { position: 'absolute' as 'absolute' },
       default: {},

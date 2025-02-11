@@ -94,7 +94,7 @@ export default function IndexScreen() {
   useEffect(() => {
     if (token) {
       // Replace '/song-of-the-day' with your main app's initial route.
-      router.replace('/song-of-the-day');
+      router.replace('/screens/song-of-the-day');
     }
   }, [token]);
 

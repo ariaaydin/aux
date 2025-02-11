@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import {
   View,
   Text,
@@ -7,12 +7,14 @@ import {
   TouchableOpacity,
   StyleSheet,
   Alert,
+  ActivityIndicator,
 } from 'react-native';
 import * as SecureStore from 'expo-secure-store';
 import { useRouter } from 'expo-router';
 
 const BACKEND_SONG_ENDPOINT = 'http://localhost:3000/api/songOfTheDay';
 const SPOTIFY_SEARCH_ENDPOINT = 'https://api.spotify.com/v1/search';
+
 
 export default function SongOfTheDaySubmission() {
   const [token, setToken] = useState<string | null>(null);
@@ -24,114 +26,136 @@ export default function SongOfTheDaySubmission() {
   const [loading, setLoading] = useState(false);
   const router = useRouter();
 
-  // On mount, fetch token, user info and any submitted song.
+  // Fetch token and user data on mount
   useEffect(() => {
-    async function fetchData() {
-      const storedToken = await SecureStore.getItemAsync('spotify_token');
-      if (storedToken) {
-        setToken(storedToken);
-        try {
-          const res = await fetch('https://api.spotify.com/v1/me', {
-            headers: { Authorization: `Bearer ${storedToken}` },
-          });
-          const userData = await res.json();
-          setSpotifyId(userData.id);
-
-          // Fetch any submitted Song of the Day for this user.
-          const getRes = await fetch(`${BACKEND_SONG_ENDPOINT}?spotifyId=${userData.id}`);
-          if (getRes.ok) {
-            const getData = await getRes.json();
-            if (getData.post) {
-              setSubmittedPost(getData.post);
-            }
-          }
-        } catch (err) {
-          console.error('Error fetching Spotify user info', err);
+    (async () => {
+      try {
+        const storedToken = await SecureStore.getItemAsync('spotify_token');
+        if (!storedToken) {
+          Alert.alert('Error', 'No authentication token found');
+          return;
         }
+        
+        setToken(storedToken);
+        
+        // Verify token with Spotify API
+        const userRes = await fetch('https://api.spotify.com/v1/me', {
+          headers: { Authorization: `Bearer ${storedToken}` },
+        });
+        
+        if (!userRes.ok) throw new Error('Invalid token');
+        
+        const userData = await userRes.json();
+        setSpotifyId(userData.id);
+
+        // Check existing submission
+        const submissionRes = await fetch(
+          `${BACKEND_SONG_ENDPOINT}?spotifyId=${userData.id}`
+        );
+        if (submissionRes.ok) {
+          const submissionData = await submissionRes.json();
+          submissionData.post && setSubmittedPost(submissionData.post);
+        }
+      } catch (error) {
+        console.error('Initialization error:', error);
+        Alert.alert('Error', 'Failed to initialize application');
       }
-    }
-    fetchData();
+    })();
   }, []);
 
-  // If submittedPost becomes truthy, automatically redirect to the Feed.
-  useEffect(() => {
-    if (submittedPost) {
-      // Redirect to the Feed (or main tabs). You can change the route as needed.
-      router.replace({ pathname: '/feed' });
+  // Debounced search with proper token handling
+  const searchSongs = useCallback(async () => {
+    if (!token || !searchQuery.trim()) {
+      setResults([]);
+      return;
     }
-  }, [submittedPost, router]);
 
-  // Search Spotify for songs based on the query.
-  const searchSongs = async () => {
-    if (!token || !searchQuery) return;
-    setLoading(true);
     try {
+      setLoading(true);
       const res = await fetch(
         `${SPOTIFY_SEARCH_ENDPOINT}?q=${encodeURIComponent(searchQuery)}&type=track&limit=10`,
-        {
-          headers: { Authorization: `Bearer ${token}` },
-        }
+        { headers: { Authorization: `Bearer ${token}` } }
       );
+      
+      if (!res.ok) throw new Error(`HTTP error! status: ${res.status}`);
+      
       const data = await res.json();
-      if (data.tracks && data.tracks.items) {
-        setResults(data.tracks.items);
-      }
-    } catch (err) {
-      console.error('Error searching songs:', err);
+      setResults(data.tracks?.items || []);
+    } catch (error) {
+      console.error('Search error:', error);
       Alert.alert('Error', 'Failed to search songs');
     } finally {
       setLoading(false);
     }
-  };
+  }, [token, searchQuery]);
 
-  // Submit the selected song as Song of the Day.
-  const submitSong = async () => {
-    if (!spotifyId || !selectedSong) return;
-    try {
-      const body = {
-        spotifyId,
-        trackId: selectedSong.id,
-        trackName: selectedSong.name,
-        trackArtist: selectedSong.artists.map((a: any) => a.name).join(', '),
-        trackImage: selectedSong.album.images[0]?.url || '',
-      };
-      const res = await fetch(BACKEND_SONG_ENDPOINT, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      });
-      const data = await res.json();
-      if (res.ok && data.post) {
-        Alert.alert('Song of the Day submitted');
-        // Setting submittedPost here will trigger the useEffect to redirect.
-        setSubmittedPost(data.post);
-      } else {
-        Alert.alert('Error', data.error || 'Failed to submit song');
-      }
-    } catch (err) {
-      console.error('Error submitting song:', err);
-      Alert.alert('Error', 'Failed to submit song');
+  // Search debounce effect
+  useEffect(() => {
+    const debounceTimer = setTimeout(searchSongs, 300);
+    return () => clearTimeout(debounceTimer);
+  }, [searchQuery, searchSongs]);
+
+  // Add this code INSIDE your component, right before the return statement:
+const submitSong = async () => {
+  if (!spotifyId || !selectedSong) {
+    Alert.alert('Error', 'Please select a song before submitting');
+    return;
+  }
+
+  try {
+    const body = {
+      spotifyId,
+      trackId: selectedSong.id,
+      trackName: selectedSong.name,
+      trackArtist: selectedSong.artists.map((a: any) => a.name).join(', '),
+      trackImage: selectedSong.album.images[0]?.url || '',
+    };
+
+    const res = await fetch(BACKEND_SONG_ENDPOINT, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+
+    const data = await res.json();
+    
+    if (res.ok && data.post) {
+      setSubmittedPost(data.post);
+    } else {
+      Alert.alert('Error', data.error || 'Failed to submit song');
     }
-  };
+  } catch (err) {
+    console.error('Submission error:', err);
+    Alert.alert('Error', 'Failed to submit song');
+  }
+};
 
-  // The submission UI.
+// Also add this useEffect for redirection after submission
+useEffect(() => {
+  if (submittedPost) {
+    router.replace('/screens/feed');
+  }
+}, [submittedPost, router]);
+
+  // Rest of your component remains the same...
+  // Only showing modified parts for brevity
+
   return (
     <View style={styles.container}>
       <Text style={styles.title}>Submit Song of the Day</Text>
+      
       <TextInput
         style={styles.searchInput}
         placeholder="Search for a song..."
         placeholderTextColor="#888"
         value={searchQuery}
         onChangeText={setSearchQuery}
+        autoCorrect={false}
+        autoCapitalize="none"
       />
-      <TouchableOpacity
-        style={styles.searchButton}
-        onPress={searchSongs}
-        disabled={loading || !searchQuery}
-      >
-        <Text style={styles.searchButtonText}>Search</Text>
-      </TouchableOpacity>
+
+      {loading && <ActivityIndicator size="small" color="#00FFFF" />}
+
       {results.length > 0 && (
         <View style={styles.resultsContainer}>
           <FlatList
@@ -150,13 +174,18 @@ export default function SongOfTheDaySubmission() {
           />
         </View>
       )}
+
+      {/* Selected song and submit button */}
       {selectedSong && (
         <View style={styles.selectedContainer}>
           <Text style={styles.selectedText}>
             Selected: {selectedSong.name} -{' '}
             {selectedSong.artists.map((a: any) => a.name).join(', ')}
           </Text>
-          <TouchableOpacity style={styles.submitSongButton} onPress={submitSong}>
+          <TouchableOpacity 
+            style={styles.submitSongButton} 
+            onPress={submitSong}
+          >
             <Text style={styles.submitSongButtonText}>
               Submit Song of the Day
             </Text>
@@ -166,7 +195,7 @@ export default function SongOfTheDaySubmission() {
     </View>
   );
 }
-
+// Update styles (remove searchButton related styles)
 const styles = StyleSheet.create({
   container: {
     flex: 1,
@@ -191,18 +220,7 @@ const styles = StyleSheet.create({
     color: '#333',
     marginBottom: 15,
   },
-  searchButton: {
-    backgroundColor: '#00FFFF',
-    borderRadius: 10,
-    paddingVertical: 14,
-    alignItems: 'center',
-    marginBottom: 20,
-  },
-  searchButtonText: {
-    color: '#FFF',
-    fontSize: 16,
-    fontWeight: '500',
-  },
+  // Remove searchButton and searchButtonText styles
   resultsContainer: {
     maxHeight: 200,
     marginBottom: 20,

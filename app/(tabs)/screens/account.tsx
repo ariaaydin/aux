@@ -30,7 +30,7 @@ export default function AccountScreen() {
             setSpotifyId(storedId);
           } else {
             Alert.alert('Error', 'No Spotify ID found. Please log in again.');
-            router.push('/(tabs)/account');
+            router.push('/(tabs)/screens/account');
           }
         })
         .catch(() => {
