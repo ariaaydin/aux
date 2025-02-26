@@ -1,23 +1,38 @@
+// app/auth/index.tsx
 import React, { useEffect, useState, useCallback } from 'react';
-import { View, Button, Alert, StyleSheet } from 'react-native';
+import { View, Button, Alert, StyleSheet, Text, Platform } from 'react-native';
 import * as SecureStore from 'expo-secure-store';
 import { useAuthRequest } from 'expo-auth-session';
 import { WebView } from 'react-native-webview';
 import { useRouter } from 'expo-router';
 import { useFocusEffect } from '@react-navigation/native';
+import { API_BASE_URL } from '../config/api';
 
 const SPOTIFY_CLIENT_ID = '6496a3c69dd145e39107b1950f105774';
 const SPOTIFY_SCOPES = 'user-library-read';
-// Ensure this URI is whitelisted in your Spotify Dashboard.
-const SPOTIFY_REDIRECT_URI = 'exp://10.101.155.121:8081';
 
-// Replace with your backend URL if needed.
-const BACKEND_USER_ENDPOINT = 'http://localhost:3000/api/users';
+// Dynamic redirect URI based on environment
+const getRedirectUri = () => {
+  if (__DEV__) {
+    // For Expo Go development
+    if (Platform.OS === 'ios') {
+      return 'exp://10.101.155.121:8081';
+    } else if (Platform.OS === 'android') {
+      return 'exp://10.0.2.2:8081';
+    }
+  }
+  // Fallback to IP (you can update this with your actual IP)
+  return 'exp://10.101.155.121:8081';
+};
+
+const SPOTIFY_REDIRECT_URI = getRedirectUri();
+const BACKEND_USER_ENDPOINT = `${API_BASE_URL}/api/users`;
 
 export default function IndexScreen() {
   const [token, setToken] = useState<string | null>(null);
   const [randomSong, setRandomSong] = useState<any>(null);
   const [user, setUser] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
   const router = useRouter();
 
   // Create the auth request.
@@ -35,11 +50,19 @@ export default function IndexScreen() {
 
   // On mount, check for an existing token.
   useEffect(() => {
-    SecureStore.getItemAsync('spotify_token').then((storedToken) => {
-      if (storedToken) {
-        setToken(storedToken);
+    async function checkToken() {
+      try {
+        const storedToken = await SecureStore.getItemAsync('spotify_token');
+        if (storedToken) {
+          setToken(storedToken);
+        }
+      } catch (error) {
+        console.error('Error checking token:', error);
+      } finally {
+        setLoading(false);
       }
-    });
+    }
+    checkToken();
   }, []);
 
   // Re-check the token every time the screen comes into focus.
@@ -83,17 +106,22 @@ export default function IndexScreen() {
                   setUser(data.user);
                 }
               })
-              .catch((err) => console.error('Backend user error:', err));
+              .catch((err) => {
+                console.error('Backend user error:', err);
+                Alert.alert(
+                  'Connection Error',
+                  `Could not connect to backend at ${API_BASE_URL}. Please check your server is running.`
+                );
+              });
           })
           .catch((err) => console.error('Spotify profile error:', err));
       }
     }
   }, [response]);
 
-  // **NEW**: Redirect if a token exists so logged-in users cannot use this login page.
+  // Redirect if a token exists so logged-in users cannot use this login page.
   useEffect(() => {
     if (token) {
-      // Replace '/song-of-the-day' with your main app's initial route.
       router.replace('/song-of-the-day');
     }
   }, [token]);
@@ -122,7 +150,7 @@ export default function IndexScreen() {
     }
   };
 
-  // (Optional) A logout function.
+  // A logout function.
   const logout = async () => {
     await SecureStore.deleteItemAsync('spotify_token');
     setToken(null);
@@ -130,21 +158,37 @@ export default function IndexScreen() {
     setUser(null);
   };
 
+  if (loading) {
+    return (
+      <View style={styles.container}>
+        <Text>Loading...</Text>
+      </View>
+    );
+  }
+
   return (
     <View style={styles.container}>
+      <Text style={styles.title}>Song of the Day</Text>
+      <Text style={styles.subtitle}>Connect with Spotify to start sharing your music</Text>
+      
       {!token ? (
         // Not connected: show Connect button.
-        <Button
-          title="Connect to Spotify"
-          onPress={() => promptAsync()}
-          disabled={!request}
-        />
+        <View style={styles.buttonContainer}>
+          <Text style={styles.infoText}>Using redirect URI: {SPOTIFY_REDIRECT_URI}</Text>
+          <Text style={styles.infoText}>Backend URL: {API_BASE_URL}</Text>
+          <Button
+            title="Connect to Spotify"
+            onPress={() => promptAsync()}
+            disabled={!request}
+          />
+        </View>
       ) : (
-        // In theory, this block won’t be seen because of the redirect,
+        // In theory, this block won't be seen because of the redirect,
         // but the detailed logic remains here.
         <View style={styles.authContainer}>
           <View style={styles.buttonRow}>
             <Button title="Fetch Random Song" onPress={getRandomSong} />
+            <Button title="Logout" onPress={logout} color="red" />
           </View>
           {randomSong && (
             <View style={styles.webViewContainer}>
@@ -168,7 +212,29 @@ const styles = StyleSheet.create({
     flex: 1, 
     backgroundColor: '#fff', 
     justifyContent: 'center', 
-    alignItems: 'center' 
+    alignItems: 'center',
+    padding: 20,
+  },
+  title: {
+    fontSize: 28,
+    fontWeight: 'bold',
+    color: '#00FFFF',
+    marginBottom: 10,
+  },
+  subtitle: {
+    fontSize: 16,
+    marginBottom: 30,
+    textAlign: 'center',
+    color: '#777',
+  },
+  buttonContainer: {
+    width: '100%',
+    alignItems: 'center',
+  },
+  infoText: {
+    fontSize: 12,
+    color: '#999',
+    marginBottom: 5,
   },
   authContainer: { 
     width: '100%', 

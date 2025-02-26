@@ -53,7 +53,7 @@ export default function TabLayout() {
     checkSOTD();
   }, []);
 
-  // While we’re checking, show a loading indicator.
+  // While we're checking, show a loading indicator.
   if (hasSubmitted === null) {
     return (
       <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
@@ -71,7 +71,6 @@ export default function TabLayout() {
     tabBarStyle: Platform.select({
       ios: { position: 'absolute' as 'absolute' },
       default: {},
-      
     }),
   };
 
@@ -80,7 +79,7 @@ export default function TabLayout() {
     return (
       <Tabs screenOptions={screenOptions}>
         <Tabs.Screen
-          name="song-of-the-day" // This should match your SOTD submission route name.
+          name="song-of-the-day" 
           options={{
             title: 'SOTD',
             tabBarIcon: ({ color }) => (
@@ -92,11 +91,11 @@ export default function TabLayout() {
     );
   }
 
-  // Otherwise, show the Feed and Account tabs.
+  // Otherwise, show all tabs including the leaderboard.
   return (
     <Tabs screenOptions={screenOptions}>
       <Tabs.Screen
-        name="feed" // This should match your Feed route.
+        name="feed"
         options={{
           title: 'Feed',
           tabBarIcon: ({ color }) => (
@@ -105,7 +104,16 @@ export default function TabLayout() {
         }}
       />
       <Tabs.Screen
-        name="account" // Make sure you have an Account route.
+        name="leaderboard"
+        options={{
+          title: 'Top Songs',
+          tabBarIcon: ({ color }) => (
+            <IconSymbol size={28} name="star.fill" color={color} />
+          ),
+        }}
+      />
+      <Tabs.Screen
+        name="account"
         options={{
           title: 'Account',
           tabBarIcon: ({ color }) => (

@@ -3,6 +3,7 @@
 const express = require('express');
 const cors = require('cors');
 const mongoose = require('mongoose');
+const fetch = require('node-fetch'); // You may need to install this
 
 const app = express();
 
@@ -110,7 +111,8 @@ const songOfTheDaySchema = new mongoose.Schema({
     type: [
       {
         user: { type: String, required: true }, // the commenting user's ID
-        text: { type: String, required: true },
+        text: { type: String }, // Text is now optional if there's a gif
+        gifUrl: { type: String }, // URL of the GIF from Giphy
         createdAt: { type: Date, default: Date.now },
       },
     ],
@@ -169,6 +171,22 @@ app.get('/api/songOfTheDay', async (req, res) => {
   }
 });
 
+// GET endpoint: Retrieve a specific song by ID
+app.get('/api/songOfTheDay/:id', async (req, res) => {
+  const songId = req.params.id;
+  try {
+    const song = await SongOfTheDay.findById(songId);
+    if (song) {
+      return res.status(200).json({ song });
+    } else {
+      return res.status(404).json({ error: 'Song not found' });
+    }
+  } catch (err) {
+    console.error('Error fetching song:', err);
+    return res.status(500).json({ error: 'Server error fetching song' });
+  }
+});
+
 // POST endpoint to toggle a like for a Song of the Day
 app.post('/api/songOfTheDay/:id/like', async (req, res) => {
   const songId = req.params.id; // This is the _id of the SongOfTheDay document
@@ -205,10 +223,11 @@ app.post('/api/songOfTheDay/:id/like', async (req, res) => {
 // POST endpoint to add a comment to a Song of the Day
 app.post('/api/songOfTheDay/:id/comment', async (req, res) => {
   const songId = req.params.id; // The SongOfTheDay document _id
-  const { spotifyId, text } = req.body; // Commenting user's id and comment text
+  const { spotifyId, text, gifUrl } = req.body; // Added gifUrl for GIF comments
 
-  if (!spotifyId || !text) {
-    return res.status(400).json({ error: 'Missing spotifyId or text in request body' });
+  // Either text or gifUrl must be provided
+  if (!spotifyId || (!text && !gifUrl)) {
+    return res.status(400).json({ error: 'Missing required fields. Either text or gifUrl must be provided.' });
   }
 
   try {
@@ -218,7 +237,12 @@ app.post('/api/songOfTheDay/:id/comment', async (req, res) => {
     }
     
     // Append the new comment to the comments array
-    song.comments.push({ user: spotifyId, text });
+    song.comments.push({ 
+      user: spotifyId, 
+      text: text || "", 
+      gifUrl: gifUrl || null,
+      createdAt: new Date()
+    });
     await song.save();
     
     return res.status(201).json({ message: 'Comment added', comments: song.comments });
@@ -228,6 +252,125 @@ app.post('/api/songOfTheDay/:id/comment', async (req, res) => {
   }
 });
 
+// New endpoint to search GIFs through Giphy API
+app.get('/api/giphy/search', async (req, res) => {
+  const { query } = req.query;
+  const GIPHY_API_KEY = 'UDAA5IVddvEOxRgFclOncXC2SsVKhxmI';  
+  if (!query) {
+    return res.status(400).json({ error: 'Missing search query' });
+  }
+
+  try {
+    const response = await fetch(`https://api.giphy.com/v1/gifs/search?api_key=${GIPHY_API_KEY}&q=${encodeURIComponent(query)}&limit=10`);
+    const data = await response.json();
+    
+    // Extract only the needed information to reduce payload size
+    const gifs = data.data.map(gif => ({
+      id: gif.id,
+      title: gif.title,
+      previewUrl: gif.images.fixed_height_small.url,
+      originalUrl: gif.images.original.url
+    }));
+    
+    return res.status(200).json({ gifs });
+  } catch (error) {
+    console.error('Error searching Giphy:', error);
+    return res.status(500).json({ error: 'Error fetching GIFs' });
+  }
+});
+
+// =========================
+// Leaderboard Endpoints
+// =========================
+
+// GET /api/leaderboard - Get the daily leaderboard
+app.get('/api/leaderboard', async (req, res) => {
+  try {
+    // Get date parameter or use current date
+    const dateParam = req.query.date;
+    let targetDate;
+    
+    if (dateParam) {
+      targetDate = new Date(dateParam);
+    } else {
+      targetDate = new Date();
+    }
+    
+    // Set time to midnight for proper date comparison
+    targetDate.setHours(0, 0, 0, 0);
+    
+    // Calculate the next day to get all posts from the specific day
+    const nextDay = new Date(targetDate);
+    nextDay.setDate(nextDay.getDate() + 1);
+    
+    // Find all songs posted on the target date
+    const songs = await SongOfTheDay.find({
+      createdAt: {
+        $gte: targetDate,
+        $lt: nextDay
+      }
+    }).sort({ 'likes.length': -1 });
+    
+    // Prepare leaderboard data with user information
+    const leaderboard = await Promise.all(songs.map(async (song, index) => {
+      // Find the user who posted the song
+      const user = await User.findOne({ spotifyId: song.spotifyId });
+      
+      return {
+        _id: song._id,
+        trackId: song.trackId,
+        trackName: song.trackName,
+        trackArtist: song.trackArtist,
+        trackImage: song.trackImage,
+        spotifyId: song.spotifyId,
+        username: user ? user.username : 'Unknown User',
+        likesCount: song.likes ? song.likes.length : 0,
+        rank: index + 1 // Assign rank based on sort order
+      };
+    }));
+    
+    res.status(200).json({ leaderboard });
+    
+  } catch (error) {
+    console.error('Error fetching leaderboard:', error);
+    res.status(500).json({ error: 'Error fetching leaderboard' });
+  }
+});
+
+// GET - All-time top songs
+app.get('/api/leaderboard/all-time', async (req, res) => {
+  try {
+    // Find top 20 songs of all time by like count
+    const songs = await SongOfTheDay.find()
+      .sort({ 'likes.length': -1 })
+      .limit(20);
+    
+    // Prepare leaderboard data with user information
+    const leaderboard = await Promise.all(songs.map(async (song, index) => {
+      // Find the user who posted the song
+      const user = await User.findOne({ spotifyId: song.spotifyId });
+      
+      return {
+        _id: song._id,
+        trackId: song.trackId,
+        trackName: song.trackName,
+        trackArtist: song.trackArtist,
+        trackImage: song.trackImage,
+        spotifyId: song.spotifyId,
+        username: user ? user.username : 'Unknown User',
+        likesCount: song.likes ? song.likes.length : 0,
+        rank: index + 1, // Assign rank based on sort order
+        postDate: song.createdAt
+      };
+    }));
+    
+    res.status(200).json({ leaderboard });
+    
+  } catch (error) {
+    console.error('Error fetching all-time leaderboard:', error);
+    res.status(500).json({ error: 'Error fetching all-time leaderboard' });
+  }
+});
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
