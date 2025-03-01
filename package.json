@@ -20,6 +20,7 @@
     "@react-navigation/material-top-tabs": "^7.1.0",
     "@react-navigation/native": "^7.0.14",
     "cors": "^2.8.5",
+    "date-fns": "^4.1.0",
     "expo": "~52.0.30",
     "expo-auth-session": "^6.0.3",
     "expo-av": "~15.0.2",
@@ -49,7 +50,9 @@
     "react-native-track-player": "^4.1.1",
     "react-native-vector-icons": "^10.2.0",
     "react-native-web": "~0.19.13",
-    "react-native-webview": "13.12.5"
+    "react-native-webview": "13.12.5",
+    "react-router-dom": "^7.2.0",
+    "expo-linear-gradient": "~14.0.2"
   },
   "devDependencies": {
     "@babel/core": "^7.25.2",

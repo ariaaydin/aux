@@ -1,31 +1,56 @@
-import React, { useEffect, useState, useRef } from 'react';
+// app/(tabs)/feed.tsx
+import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { 
   View, 
   Text, 
   FlatList, 
   StyleSheet, 
-  Dimensions, 
   TouchableOpacity,
-  TextInput,
   ActivityIndicator,
-  Animated,
-  Image,
-  ImageStyle,
-  ViewStyle,
-  TextStyle
+  Alert,
+  Platform
 } from 'react-native';
-import WebView from 'react-native-webview';
 import * as SecureStore from 'expo-secure-store';
-import { Ionicons, MaterialIcons } from '@expo/vector-icons';
+import { Ionicons } from '@expo/vector-icons';
+import { useFocusEffect } from '@react-navigation/native';
+import { useRouter } from 'expo-router';
+import { SongCard } from '../../components/SongCard';
 
-// Interface definitions
-interface Comment {
-  user: string;
-  text: string;
-  gifUrl?: string;
+// Backend endpoint (adjust for emulator)
+const API_URL = __DEV__ 
+  ? Platform.OS === 'android' 
+    ? 'http://10.0.2.2:3000' // Android emulator
+    : 'http://localhost:3000'  // iOS simulator
+  : 'http://localhost:3000';   // Production URL
+
+// Interface for song post
+// Add this to your interface definitions at the top of the file
+interface CommentLike {
+  userId: string;
   createdAt: string;
 }
 
+interface CommentReply {
+  id: string;
+  userId: string;
+  username: string;
+  text: string;
+  createdAt: string;
+  likes: CommentLike[];
+}
+
+interface Comment {
+  id: string;
+  user: string;
+  username?: string;
+  text: string;
+  gifUrl?: string;
+  createdAt: string;
+  likes: CommentLike[];
+  replies: CommentReply[];
+}
+
+// Then update your SongPost interface to use the Comment type
 interface SongPost {
   _id: string;
   trackId: string;
@@ -33,525 +58,157 @@ interface SongPost {
   trackArtist: string;
   trackImage: string;
   spotifyId: string;
+  username?: string;
   likes: string[];
-  comments: Comment[];
+  comments: Comment[];  // Use the Comment type instead of any[]
+  createdAt: string;
 }
 
-interface SongCardProps {
-  songPost: SongPost;
-  currentUserSpotifyId: string | null;
-  onLike: (songId: string) => Promise<void>;
-  onComment: (songId: string, comment: string, gifUrl?: string) => Promise<void>;
-}
-
-interface DynamicStyles {
-  card: ViewStyle;
-  cardContent: ViewStyle;
-  cardHeader: ViewStyle;
-  likeText: TextStyle;
-  commentsText: TextStyle;
-  commentItem: ViewStyle;
-  commentUser: TextStyle;
-  commentText: TextStyle;
-  inputContainer: ViewStyle;
-  input: TextStyle;
-  sendButton: ViewStyle;
-  emptyCommentsText: TextStyle;
-  gifPickerContainer: ViewStyle;
-  gifSearchInput: TextStyle;
-  commentGif: ImageStyle;
-  gifItem: ImageStyle;
-}
-
-// SongCard component
-const SongCard = ({ 
-  songPost, 
-  currentUserSpotifyId, 
-  onLike, 
-  onComment 
-}: SongCardProps) => {
-  const [commentsExpanded, setCommentsExpanded] = useState(false);
-  const [newComment, setNewComment] = useState('');
-  const [submittingComment, setSubmittingComment] = useState(false);
-  const [hasLiked, setHasLiked] = useState(
-    currentUserSpotifyId ? songPost.likes.includes(currentUserSpotifyId) : false
-  );
-  const [dominantColor, setDominantColor] = useState('#3E3E35');
-  const [isGifMode, setIsGifMode] = useState(false);
-  const [gifSearch, setGifSearch] = useState('');
-  const [gifs, setGifs] = useState<any[]>([]);
-  const [selectedGif, setSelectedGif] = useState<string | null>(null);
-
-  const animatedHeight = useRef(new Animated.Value(0)).current;
-  const commentOpacity = useRef(new Animated.Value(0)).current;
-
-  const toggleComments = () => {
-    if (commentsExpanded) {
-      Animated.parallel([
-        Animated.timing(commentOpacity, { toValue: 0, duration: 200, useNativeDriver: false }),
-        Animated.timing(animatedHeight, { toValue: 0, duration: 300, useNativeDriver: false })
-      ]).start(() => setCommentsExpanded(false));
-    } else {
-      setCommentsExpanded(true);
-      Animated.parallel([
-        Animated.timing(animatedHeight, { toValue: 250, duration: 300, useNativeDriver: false }),
-        Animated.timing(commentOpacity, { toValue: 1, duration: 300, useNativeDriver: false, delay: 100 })
-      ]).start();
-    }
-  };
-
-  const handleLike = async () => {
-    if (!currentUserSpotifyId) return;
-    setHasLiked(!hasLiked);
-    await onLike(songPost._id);
-  };
-
-  const fetchGifs = async (searchTerm: string) => {
-    try {
-      const response = await fetch(`http://localhost:3000/api/giphy/search?query=${encodeURIComponent(searchTerm)}`);
-      const data = await response.json();
-      setGifs(data.gifs || []);
-    } catch (error) {
-      console.error('Error fetching GIFs:', error);
-    }
-  };
-
-  const handleGifSearch = (text: string) => {
-    setGifSearch(text);
-    if (text.length > 2) fetchGifs(text);
-    else setGifs([]);
-  };
-
-  const toggleGifMode = () => {
-    setIsGifMode(!isGifMode);
-    setSelectedGif(null);
-    setGifSearch('');
-    setGifs([]);
-    setNewComment('');
-  };
-
-  const handleComment = async () => {
-    if (!currentUserSpotifyId || (!newComment.trim() && !selectedGif) || submittingComment) return;
-    
-    setSubmittingComment(true);
-    try {
-      await onComment(songPost._id, newComment.trim(), selectedGif || undefined);
-      setNewComment('');
-      setSelectedGif(null);
-      setIsGifMode(false);
-      if (!commentsExpanded) toggleComments();
-    } finally {
-      setSubmittingComment(false);
-    }
-  };
-
-  const spotifyEmbedHtml = `
-    <html>
-      <head>
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <style>
-          html, body { margin: 0; padding: 0; background-color: transparent; overflow: hidden; height: 100%; width: 100%; }
-          iframe { border: none; width: 100%; height: 100%; position: absolute; top: 0; left: 0; right: 0; bottom: 0; }
-        </style>
-        <script>
-          function getIframeBackgroundColor() {
-            setTimeout(() => {
-              const iframe = document.querySelector('iframe');
-              if (iframe && iframe.contentDocument) {
-                const bgColor = getComputedStyle(iframe.contentDocument.body).backgroundColor;
-                if (bgColor) window.ReactNativeWebView.postMessage(bgColor);
-              }
-            }, 1000);
-          }
-          window.onload = () => {
-            getIframeBackgroundColor();
-            setTimeout(getIframeBackgroundColor, 2000);
-          };
-        </script>
-      </head>
-      <body>
-        <iframe 
-          src="https://open.spotify.com/embed/track/${songPost.trackId}" 
-          frameborder="0" 
-          allowtransparency="true" 
-          allow="encrypted-media"
-          onload="getIframeBackgroundColor()"
-        ></iframe>
-      </body>
-    </html>
-  `;
-
-  const handleWebViewMessage = (event: { nativeEvent: { data: string } }) => {
-    const color = event.nativeEvent.data;
-    if (color && color !== '') {
-      if (color.startsWith('rgb')) {
-        const rgbValues = color.match(/\d+/g);
-        if (rgbValues && rgbValues.length >= 3) {
-          const r = parseInt(rgbValues[0]);
-          const g = parseInt(rgbValues[1]);
-          const b = parseInt(rgbValues[2]);
-          setDominantColor(`#${r.toString(16).padStart(2, '0')}${g.toString(16).padStart(2, '0')}${b.toString(16).padStart(2, '0')}`);
-        }
-      } else {
-        setDominantColor(color);
-      }
-    }
-  };
-
-  const getTextColor = (bgColor: string): string => {
-    if (bgColor.startsWith('rgb')) {
-      const rgbValues = bgColor.match(/\d+/g);
-      if (rgbValues && rgbValues.length >= 3) {
-        const brightness = (parseInt(rgbValues[0]) * 299 + parseInt(rgbValues[1]) * 587 + parseInt(rgbValues[2]) * 114) / 1000;
-        return brightness > 128 ? '#000000' : '#ffffff';
-      }
-    }
-    if (bgColor.startsWith('#')) {
-      const r = parseInt(bgColor.substr(1, 2), 16);
-      const g = parseInt(bgColor.substr(3, 2), 16);
-      const b = parseInt(bgColor.substr(5, 2), 16);
-      const brightness = (r * 299 + g * 587 + b * 114) / 1000;
-      return brightness > 128 ? '#000000' : '#ffffff';
-    }
-    return '#ffffff';
-  };
-
-  const textColor = getTextColor(dominantColor);
-  const secondaryTextColor = textColor === '#000000' ? '#555555' : '#dddddd';
-  const TEAL_COLOR = '#00FFFF';
-
-  const dynamicStyles: DynamicStyles = {
-    card: {
-      backgroundColor: dominantColor,
-      borderRadius: 12,
-      overflow: 'hidden',
-      marginVertical: 8,
-      marginHorizontal: 16,
-      shadowColor: '#000',
-      shadowOffset: { width: 0, height: 2 },
-      shadowOpacity: 0.2,
-      shadowRadius: 6,
-      elevation: 4,
-    },
-    cardContent: {
-      paddingHorizontal: 16,
-      paddingVertical: 12,
-    },
-    cardHeader: {
-      flexDirection: 'row',
-      justifyContent: 'space-between',
-      alignItems: 'center',
-      paddingVertical: 8,
-    },
-    likeText: {
-      color: TEAL_COLOR,
-      fontSize: 14,
-      marginLeft: 8,
-      fontWeight: '600',
-    },
-    commentsText: {
-      color: textColor,
-      fontSize: 14,
-      marginRight: 8,
-    },
-    commentItem: {
-      paddingVertical: 10,
-      paddingHorizontal: 12,
-      marginVertical: 4,
-      backgroundColor: `${dominantColor}CC`,
-      borderRadius: 8,
-      borderLeftWidth: 2,
-      borderLeftColor: TEAL_COLOR,
-    },
-    commentUser: {
-      fontWeight: '600',
-      color: textColor,
-      marginBottom: 2,
-      fontSize: 13,
-    },
-    commentText: {
-      color: secondaryTextColor,
-      fontSize: 14,
-    },
-    inputContainer: {
-      flexDirection: 'row',
-      alignItems: 'center',
-      marginTop: 10,
-      marginBottom: 4,
-    },
-    input: {
-      flex: 1,
-      backgroundColor: `${dominantColor}80`,
-      borderRadius: 20,
-      paddingHorizontal: 12,
-      paddingVertical: 8,
-      color: textColor,
-      fontSize: 14,
-      borderWidth: 1,
-      borderColor: `${textColor}40`,
-    },
-    sendButton: {
-      width: 36,
-      height: 36,
-      borderRadius: 18,
-      backgroundColor: TEAL_COLOR,
-      justifyContent: 'center',
-      alignItems: 'center',
-      marginLeft: 8,
-    },
-    emptyCommentsText: {
-      textAlign: 'center',
-      padding: 16,
-      color: secondaryTextColor,
-      fontStyle: 'italic',
-      fontSize: 14,
-    },
-    gifPickerContainer: {
-      backgroundColor: `${dominantColor}CC`,
-      borderRadius: 8,
-      padding: 8,
-      marginTop: 8,
-      maxHeight: 150,
-    },
-    gifSearchInput: {
-      flex: 1,
-      backgroundColor: `${dominantColor}80`,
-      borderRadius: 20,
-      paddingHorizontal: 12,
-      paddingVertical: 8,
-      color: textColor,
-      fontSize: 14,
-      borderWidth: 1,
-      borderColor: `${textColor}40`,
-    },
-    commentGif: {
-      width: 80,
-      height: 80,
-      borderRadius: 4,
-      marginTop: 4,
-    },
-    gifItem: {
-      width: 80,
-      height: 80,
-      margin: 4,
-      borderRadius: 4,
-    },
-  };
-
-  return (
-    <View style={dynamicStyles.card}>
-      <View style={styles.playerContainer}>
-        <WebView
-          source={{ html: spotifyEmbedHtml }}
-          style={styles.webView}
-          scrollEnabled={false}
-          bounces={false}
-          javaScriptEnabled={true}
-          onMessage={handleWebViewMessage}
-        />
-      </View>
-      
-      <View style={dynamicStyles.cardContent}>
-        <View style={dynamicStyles.cardHeader}>
-          <TouchableOpacity 
-            style={styles.iconButton} 
-            onPress={handleLike}
-            disabled={!currentUserSpotifyId}
-          >
-            <Ionicons 
-              name={hasLiked ? "heart" : "heart-outline"} 
-              size={22} 
-              color={TEAL_COLOR} 
-            />
-            <Text style={dynamicStyles.likeText}>
-              {songPost.likes.length}
-            </Text>
-          </TouchableOpacity>
-          
-          <TouchableOpacity 
-            style={styles.iconButton} 
-            onPress={toggleComments}
-          >
-            <Text style={dynamicStyles.commentsText}>
-              {songPost.comments.length} Comments
-            </Text>
-            <MaterialIcons 
-              name={commentsExpanded ? "expand-less" : "expand-more"} 
-              size={24} 
-              color={textColor} 
-            />
-          </TouchableOpacity>
-        </View>
-        
-        {commentsExpanded && (
-          <Animated.View style={{ 
-            maxHeight: animatedHeight, 
-            opacity: commentOpacity,
-            overflow: 'hidden',
-            marginTop: 4
-          }}>
-            {songPost.comments.length > 0 ? (
-              <FlatList
-                data={songPost.comments}
-                keyExtractor={(item, index) => index.toString()}
-                renderItem={({ item }) => (
-                  <View style={dynamicStyles.commentItem}>
-                    <Text style={dynamicStyles.commentUser}>{item.user}</Text>
-                    {item.text && <Text style={dynamicStyles.commentText}>{item.text}</Text>}
-                    {item.gifUrl && (
-                      <Image 
-                        source={{ uri: item.gifUrl }} 
-                        style={dynamicStyles.commentGif}
-                      />
-                    )}
-                  </View>
-                )}
-                showsVerticalScrollIndicator={false}
-              />
-            ) : (
-              <Text style={dynamicStyles.emptyCommentsText}>
-                No comments yet
-              </Text>
-            )}
-          </Animated.View>
-        )}
-        
-        {currentUserSpotifyId && (
-          <View style={dynamicStyles.inputContainer}>
-            {isGifMode ? (
-              <>
-                <TextInput
-                  style={dynamicStyles.gifSearchInput}
-                  placeholder="Search GIFs..."
-                  placeholderTextColor={`${textColor}80`}
-                  value={gifSearch}
-                  onChangeText={handleGifSearch}
-                />
-                {gifs.length > 0 && (
-                  <View style={dynamicStyles.gifPickerContainer}>
-                    <FlatList
-                      data={gifs}
-                      horizontal
-                      keyExtractor={(item) => item.id}
-                      renderItem={({ item }) => (
-                        <TouchableOpacity onPress={() => setSelectedGif(item.originalUrl === selectedGif ? null : item.originalUrl)}>
-                          <Image 
-                            source={{ uri: item.previewUrl }} 
-                            style={[
-                              dynamicStyles.gifItem,
-                              { borderWidth: item.originalUrl === selectedGif ? 2 : 0, borderColor: TEAL_COLOR }
-                            ]}
-                          />
-                        </TouchableOpacity>
-                      )}
-                    />
-                  </View>
-                )}
-              </>
-            ) : (
-              <TextInput
-                style={dynamicStyles.input}
-                placeholder="Add a comment..."
-                placeholderTextColor={`${textColor}80`}
-                value={newComment}
-                onChangeText={setNewComment}
-                maxLength={300}
-              />
-            )}
-            <TouchableOpacity 
-              style={[dynamicStyles.sendButton, { backgroundColor: '#666' }]}
-              onPress={toggleGifMode}
-            >
-              <MaterialIcons name={isGifMode ? "text-fields" : "gif"} size={24} color="#ffffff" />
-            </TouchableOpacity>
-            <TouchableOpacity 
-              style={[
-                dynamicStyles.sendButton,
-                (!newComment.trim() && !selectedGif) || submittingComment ? { opacity: 0.6 } : {}
-              ]}
-              onPress={handleComment}
-              disabled={(!newComment.trim() && !selectedGif) || submittingComment}
-            >
-              <Ionicons name="paper-plane" size={16} color="#ffffff" />
-            </TouchableOpacity>
-          </View>
-        )}
-      </View>
-    </View>
-  );
-};
-
-// Main component
-export default function SongOfTheDay() {
+export default function FeedScreen() {
   const [songs, setSongs] = useState<SongPost[]>([]);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [currentUserSpotifyId, setCurrentUserSpotifyId] = useState<string | null>(null);
+  
+  // Ref to track if initial fetch is done
+  const initialFetchDone = useRef(false);
+  // Ref to track ongoing fetch
+  const fetchInProgress = useRef(false);
+  
+  const router = useRouter();
 
+  // Fetch current user data
   useEffect(() => {
     const init = async () => {
       try {
         const userSpotifyId = await SecureStore.getItemAsync('spotify_id');
+        console.log('Current user ID:', userSpotifyId);
         setCurrentUserSpotifyId(userSpotifyId);
-        await fetchSongs();
+        
+        if (userSpotifyId) {
+          await fetchFeed(userSpotifyId);
+          initialFetchDone.current = true;
+        } else {
+          setError('User not logged in');
+          setLoading(false);
+        }
       } catch (error) {
         console.error('Initialization error:', error);
         setError('Failed to initialize');
+        setLoading(false);
       }
     };
     init();
   }, []);
 
-  const fetchSongs = async () => {
-    try {
-      setLoading(true);
-      setError(null);
-      const response = await fetch('http://localhost:3000/api/leaderboard');
-      const data = await response.json();
-      
-      if (data.leaderboard && data.leaderboard.length > 0) {
-        const processedSongs = await Promise.all(
-          data.leaderboard.map(async (song: any) => {
-            try {
-              const songResponse = await fetch(`http://localhost:3000/api/songOfTheDay/${song._id}`);
-              const songData = await songResponse.json();
-              if (songData.song) return songData.song;
-            } catch (err) {
-              console.error('Error fetching song details:', err);
-            }
-            return {
-              _id: song._id,
-              trackId: song.trackId,
-              trackName: song.trackName,
-              trackArtist: song.trackArtist,
-              trackImage: song.trackImage,
-              spotifyId: song.spotifyId,
-              likes: new Array(song.likesCount || 0).fill(''),
-              comments: []
-            };
-          })
-        );
-        setSongs(processedSongs);
-      } else {
-        setError('No songs available');
+  // Refresh when tab comes into focus, but avoid duplicate calls
+  useFocusEffect(
+    useCallback(() => {
+      if (currentUserSpotifyId && initialFetchDone.current && !fetchInProgress.current) {
+        fetchFeed(currentUserSpotifyId);
       }
-    } catch (error) {
-      console.error('Error fetching songs:', error);
-      setError('Failed to load songs');
+      return () => {};
+    }, [currentUserSpotifyId])
+  );
+
+  // Handle pull-to-refresh
+  const onRefresh = useCallback(() => {
+    if (currentUserSpotifyId && !fetchInProgress.current) {
+      setRefreshing(true);
+      fetchFeed(currentUserSpotifyId);
+    }
+  }, [currentUserSpotifyId]);
+
+  // Fetch feed data from backend with improved error handling
+  const fetchFeed = async (userId: string) => {
+    // Prevent multiple fetch calls
+    if (fetchInProgress.current) {
+      console.log('Fetch already in progress, skipping');
+      return;
+    }
+    
+    fetchInProgress.current = true;
+    
+    try {
+      console.log(`Fetching feed for user: ${userId}`);
+      if (!refreshing) setLoading(true);
+      setError(null);
+      
+      const feedUrl = `${API_URL}/api/feed/${userId}`;
+      console.log(`Fetching from URL: ${feedUrl}`);
+      
+      // Add abort controller for timeout
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 15000); // 15 second timeout
+      
+      try {
+        const response = await fetch(feedUrl, {
+          signal: controller.signal,
+          headers: {
+            'Cache-Control': 'no-cache',
+            'Connection': 'keep-alive'
+          }
+        });
+        
+        // Clear the timeout
+        clearTimeout(timeoutId);
+        
+        console.log(`Response status: ${response.status}`);
+        
+        if (!response.ok) {
+          throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        
+        const data = await response.json();
+        console.log('Feed data:', data);
+        
+        // Always set songs to an array, empty or not
+        setSongs(data.feed || []);
+      } catch (fetchError: any) {
+        if (fetchError.name === 'AbortError') {
+          throw new Error('Request timed out. Please try again later.');
+        } else {
+          throw fetchError;
+        }
+      }
+    } catch (error: any) {
+      console.error('Error fetching feed:', error);
+      
+      let errorMessage = 'Failed to load feed';
+      
+      // More specific error messages based on error type
+      if (error.message.includes('timed out') || error.message.includes('abort')) {
+        errorMessage = 'Connection timed out. Please check your network and try again.';
+      } else if (error.message.includes('Network request failed') || error.message.includes('network')) {
+        errorMessage = 'Network connection error. Please check your connection.';
+      } else {
+        errorMessage = `Error loading feed: ${error.message}`;
+      }
+      
+      setError(errorMessage);
+      
+      // In case of error, set empty array to avoid undefined issues
+      setSongs([]);
     } finally {
+      fetchInProgress.current = false;
       setLoading(false);
+      setRefreshing(false);
     }
   };
 
+  // Handle liking a song
   const handleLike = async (songId: string) => {
     if (!currentUserSpotifyId) return;
     try {
-      const response = await fetch(`http://localhost:3000/api/songOfTheDay/${songId}/like`, {
+      const response = await fetch(`${API_URL}/api/songOfTheDay/${songId}/like`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ spotifyId: currentUserSpotifyId })
       });
+      
       if (response.ok) {
+        // Update UI optimistically
         setSongs(prevSongs => 
           prevSongs.map(song => {
             if (song._id === songId) {
@@ -564,16 +221,20 @@ export default function SongOfTheDay() {
             return song;
           })
         );
+      } else {
+        Alert.alert('Error', 'Failed to update like');
       }
     } catch (error) {
       console.error('Error toggling like:', error);
+      Alert.alert('Error', 'Network error while updating like');
     }
   };
 
+  // Handle adding a comment
   const handleComment = async (songId: string, commentText: string, gifUrl?: string) => {
     if (!currentUserSpotifyId) return;
     try {
-      const response = await fetch(`http://localhost:3000/api/songOfTheDay/${songId}/comment`, {
+      const response = await fetch(`${API_URL}/api/songOfTheDay/${songId}/comment`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
@@ -582,47 +243,178 @@ export default function SongOfTheDay() {
           gifUrl
         })
       });
+      
       if (response.ok) {
+        const result = await response.json();
+        
+        // Update UI with the returned comment that includes ID
         setSongs(prevSongs => 
           prevSongs.map(song => {
             if (song._id === songId) {
-              const newComment = {
-                user: currentUserSpotifyId,
-                text: commentText,
-                gifUrl,
-                createdAt: new Date().toISOString()
-              };
               return { 
                 ...song, 
-                comments: [...song.comments, newComment] 
+                comments: [...song.comments, result.comment] 
               };
             }
             return song;
           })
         );
+      } else {
+        Alert.alert('Error', 'Failed to add comment');
       }
     } catch (error) {
       console.error('Error adding comment:', error);
+      Alert.alert('Error', 'Network error while adding comment');
     }
   };
 
-  if (loading) {
+  // Handle liking a comment
+  const handleCommentLike = async (songId: string, commentId: string) => {
+    if (!currentUserSpotifyId) return;
+    console.log(`Liking comment ${commentId} for song ${songId}`); // Debug log
+    
+    try {
+      const response = await fetch(`${API_URL}/api/songOfTheDay/${songId}/comment/${commentId}/like`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ spotifyId: currentUserSpotifyId })
+      });
+      
+      console.log('Response status:', response.status); // Debug log
+      
+      if (response.ok) {
+        const result = await response.json();
+        console.log('Like result:', result); // Debug log
+        
+        // Update UI with the new likes
+        setSongs(prevSongs => 
+          prevSongs.map(song => {
+            if (song._id === songId) {
+              // Create a deep copy of song to avoid mutation issues
+              const updatedSong = { ...song };
+              
+              // If comments exist
+              if (updatedSong.comments && updatedSong.comments.length > 0) {
+                // Update comments array with new likes
+                updatedSong.comments = updatedSong.comments.map(comment => {
+                  // Check if this is the comment we're looking for
+                  if (comment.id === commentId) {
+                    return { ...comment, likes: result.likes };
+                  }
+                  
+                  // Check if this is in the replies
+                  if (comment.replies && comment.replies.length > 0) {
+                    const updatedReplies = comment.replies.map(reply => 
+                      reply.id === commentId ? { ...reply, likes: result.likes } : reply
+                    );
+                    return { ...comment, replies: updatedReplies };
+                  }
+                  
+                  return comment;
+                });
+              }
+              
+              return updatedSong;
+            }
+            return song;
+          })
+        );
+      } else {
+        console.error('Error response:', await response.text());
+        Alert.alert('Error', 'Failed to update comment like');
+      }
+    } catch (error) {
+      console.error('Error toggling comment like:', error);
+      Alert.alert('Error', 'Network error while updating comment like');
+    }
+  };
+
+  // Handle replying to a comment
+  const handleReply = async (songId: string, commentId: string, replyText: string) => {
+    if (!currentUserSpotifyId) return;
+    console.log(`Replying to comment ${commentId} on song ${songId} with text: ${replyText}`); // Debug log
+    
+    try {
+      const response = await fetch(`${API_URL}/api/songOfTheDay/${songId}/comment/${commentId}/reply`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          spotifyId: currentUserSpotifyId,
+          text: replyText
+        })
+      });
+      
+      console.log('Response status:', response.status); // Debug log
+      
+      if (response.ok) {
+        const result = await response.json();
+        console.log('Reply result:', result); // Debug log
+        
+        // Update UI with the new reply
+        setSongs(prevSongs => 
+          prevSongs.map(song => {
+            if (song._id === songId) {
+              // Create a deep copy of song to avoid mutation issues
+              const updatedSong = { ...song };
+              
+              // If comments exist
+              if (updatedSong.comments && updatedSong.comments.length > 0) {
+                // Update the specific comment with the new reply
+                updatedSong.comments = updatedSong.comments.map(comment => {
+                  if (comment.id === commentId) {
+                    // Initialize replies array if it doesn't exist
+                    const replies = comment.replies || [];
+                    return { 
+                      ...comment, 
+                      replies: [...replies, result.reply]
+                    };
+                  }
+                  return comment;
+                });
+              }
+              
+              return updatedSong;
+            }
+            return song;
+          })
+        );
+      } else {
+        console.error('Error response:', await response.text());
+        Alert.alert('Error', 'Failed to add reply');
+      }
+    } catch (error) {
+      console.error('Error adding reply:', error);
+      Alert.alert('Error', 'Network error while adding reply');
+    }
+  };
+
+  // Loading state
+  if (loading && !refreshing) {
     return (
       <View style={styles.container}>
         <View style={styles.loadingContainer}>
-          <ActivityIndicator size="small" color="#00FFFF" />
-          <Text style={styles.loadingText}>Loading songs...</Text>
+          <ActivityIndicator size="large" color="#00FFFF" />
+          <Text style={styles.loadingText}>Loading feed...</Text>
         </View>
       </View>
     );
   }
 
-  if (error) {
+  // Error state
+  if (error && !refreshing) {
     return (
       <View style={styles.container}>
         <View style={styles.errorContainer}>
+          <Text style={styles.headerText}>Feed</Text>
           <Text style={styles.errorText}>{error}</Text>
-          <TouchableOpacity style={styles.refreshButton} onPress={fetchSongs}>
+          <TouchableOpacity 
+            style={styles.refreshButton} 
+            onPress={() => {
+              if (currentUserSpotifyId && !fetchInProgress.current) {
+                fetchFeed(currentUserSpotifyId);
+              }
+            }}
+          >
             <Text style={styles.refreshButtonText}>Refresh</Text>
           </TouchableOpacity>
         </View>
@@ -630,9 +422,32 @@ export default function SongOfTheDay() {
     );
   }
 
+  // Empty state
+  if (songs.length === 0 && !loading && !refreshing) {
+    return (
+      <View style={styles.container}>
+        <Text style={styles.headerText}>Feed</Text>
+        <View style={styles.emptyFeedContainer}>
+          <Ionicons name="musical-notes" size={64} color="#CCCCCC" />
+          <Text style={styles.emptyFeedTitle}>No songs in your feed</Text>
+          <Text style={styles.emptyFeedText}>
+            Follow friends to see their Songs of the Day
+          </Text>
+          <TouchableOpacity 
+            style={styles.findFriendsButton}
+            onPress={() => router.push('/(tabs)/account')}
+          >
+            <Text style={styles.findFriendsButtonText}>Find Friends</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+    );
+  }
+
+  // Normal view with content
   return (
     <View style={styles.container}>
-      <Text style={styles.headerText}>Song of the Day</Text>
+      <Text style={styles.headerText}>Feed</Text>
       <FlatList
         data={songs}
         keyExtractor={(item) => item._id}
@@ -642,16 +457,26 @@ export default function SongOfTheDay() {
             currentUserSpotifyId={currentUserSpotifyId}
             onLike={handleLike}
             onComment={handleComment}
+            onCommentLike={handleCommentLike}  // Add this new prop
+            onReply={handleReply}              // Add this new prop
           />
         )}
         showsVerticalScrollIndicator={false}
         contentContainerStyle={styles.listContent}
+        refreshing={refreshing}
+        onRefresh={onRefresh}
+        initialNumToRender={3}
+        maxToRenderPerBatch={5}
+        windowSize={5}
+        ListEmptyComponent={
+          <View style={styles.emptyContainer}>
+            <Text style={styles.emptyText}>No songs found</Text>
+          </View>
+        }
       />
     </View>
   );
 }
-
-const { width } = Dimensions.get('window');
 
 const styles = StyleSheet.create({
   container: {
@@ -667,53 +492,78 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
   },
   listContent: {
+    paddingHorizontal: 16,
     paddingBottom: 20,
   },
   loadingContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
+    flex: 1,
     justifyContent: 'center',
+    alignItems: 'center',
     padding: 20,
   },
   loadingText: {
-    fontSize: 14,
+    fontSize: 16,
     color: '#777',
-    marginLeft: 10,
+    marginTop: 12,
   },
   errorContainer: {
+    flex: 1,
     padding: 20,
-    alignItems: 'center',
   },
   errorText: {
-    fontSize: 15,
+    fontSize: 16,
     color: '#ff6b6b',
     marginBottom: 16,
     textAlign: 'center',
   },
   refreshButton: {
-    paddingVertical: 8,
-    paddingHorizontal: 16,
+    paddingVertical: 10,
+    paddingHorizontal: 20,
     backgroundColor: '#00FFFF',
     borderRadius: 20,
+    alignSelf: 'center',
   },
   refreshButtonText: {
-    color: '#000',
+    color: '#FFF',
     fontSize: 14,
     fontWeight: '500',
   },
-  playerContainer: {
-    width: '100%',
-    height: 160,
-    backgroundColor: 'transparent',
-  },
-  webView: {
+  emptyFeedContainer: {
     flex: 1,
-    backgroundColor: 'transparent',
-  },
-  iconButton: {
-    flexDirection: 'row',
+    justifyContent: 'center',
     alignItems: 'center',
-    paddingVertical: 6,
-    paddingHorizontal: 2,
+    padding: 20,
   },
+  emptyFeedTitle: {
+    fontSize: 20,
+    fontWeight: 'bold',
+    color: '#333',
+    marginTop: 16,
+    marginBottom: 8,
+  },
+  emptyFeedText: {
+    fontSize: 16,
+    color: '#666',
+    textAlign: 'center',
+    marginBottom: 20,
+  },
+  findFriendsButton: {
+    paddingVertical: 12,
+    paddingHorizontal: 24,
+    backgroundColor: '#00FFFF',
+    borderRadius: 20,
+  },
+  findFriendsButtonText: {
+    color: '#FFF',
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  emptyContainer: {
+    padding: 20,
+    alignItems: 'center',
+  },
+  emptyText: {
+    fontSize: 16,
+    color: '#999',
+  }
 });
