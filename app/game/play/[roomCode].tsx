@@ -1,4 +1,3 @@
-// app/game/play/[roomCode].tsx
 import React, { useState, useEffect, useRef } from 'react';
 import {
   View,
@@ -12,10 +11,10 @@ import {
   Animated
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
+import { WebView } from 'react-native-webview';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import * as SecureStore from 'expo-secure-store';
-import { WebView } from 'react-native-webview';
 import io from 'socket.io-client';
 
 // Define game phases
@@ -25,6 +24,21 @@ const PHASES = {
   PLAYBACK: 'playback',
   VOTING: 'voting',
   RESULTS: 'results'
+};
+
+// Define Player type
+type Player = {
+  spotifyId: string;
+  username: string;
+  selectedSongs: Song[];
+};
+
+// Define Song type
+type Song = {
+  trackId: string;
+  trackName: string;
+  trackArtist: string;
+  trackImage: string;
 };
 
 export default function GamePlayScreen() {
@@ -38,6 +52,7 @@ export default function GamePlayScreen() {
   const [mySongs, setMySongs] = useState<any[]>([]);
   const [submissions, setSubmissions] = useState<any[]>([]);
   const [currentPlayingIndex, setCurrentPlayingIndex] = useState<number>(-1);
+  const [songProgress, setSongProgress] = useState<{ [key: number]: number }>({}); // Progress per song
   const [selectedSongForSubmission, setSelectedSongForSubmission] = useState<string | null>(null);
   const [selectedVote, setSelectedVote] = useState<string | null>(null);
   const [roundResults, setRoundResults] = useState<any>(null);
@@ -52,152 +67,128 @@ export default function GamePlayScreen() {
   
   const router = useRouter();
 
-  // Connect to socket server
+  // Connect to socket server and initialize
   useEffect(() => {
     const newSocket = io('http://localhost:3000');
     setSocket(newSocket);
-    
-    // Get Spotify token
+  
     SecureStore.getItemAsync('spotify_token').then(token => {
       setToken(token);
     });
-    
-    // Handle connection
+  
     newSocket.on('connect', () => {
       console.log('Connected to socket server');
-      
-      // Join game room
-      newSocket.emit('joinGame', { 
-        roomCode: roomCode as string, 
-        spotifyId: spotifyId as string
-      });
+      newSocket.emit('joinGame', { roomCode: roomCode as string, spotifyId: spotifyId as string });
     });
-    
-    // Handle game state update
+  
     newSocket.on('gameState', (data) => {
-      console.log('Game state updated', data);
+      console.log('Game state received:', JSON.stringify(data, null, 2));
       setGameState(data);
-      
-      // Update game state variables
       setCurrentPhase(data.currentPhase);
       setRound(data.currentRound);
       setTotalRounds(data.totalRounds);
       setCategory(data.category);
       setTimeLeft(data.timeLeft);
-      
-      // Set my songs
+  
       const myPlayerData = data.players.find((p: any) => p.spotifyId === spotifyId);
       if (myPlayerData) {
-        setMySongs(myPlayerData.selectedSongs);
+        if (myPlayerData.selectedSongs && myPlayerData.selectedSongs.length > 0) {
+          console.log(`Setting mySongs for ${spotifyId}:`, myPlayerData.selectedSongs);
+          setMySongs(myPlayerData.selectedSongs);
+        } else {
+          console.log(`No selectedSongs found for ${spotifyId} in gameState`);
+          setMySongs([]); // Ensure empty array if no songs
+        }
+      } else {
+        console.log(`Player ${spotifyId} not found in gameState.players`);
+        setMySongs([]);
       }
-      
-      // Update submissions if in playback or voting phase
+  
       if (data.currentPhase === PHASES.PLAYBACK || data.currentPhase === PHASES.VOTING) {
         setSubmissions(data.submissions);
       }
-      
-      // Update results if in results phase
+  
       if (data.currentPhase === PHASES.RESULTS) {
         setRoundResults(data.roundResults);
         setLeaderboard(data.leaderboard);
       }
-      
-      // Check if game is completed
+  
       if (data.isLastRound && data.currentPhase === PHASES.RESULTS) {
         setIsGameCompleted(true);
       }
     });
-    
-    // Handle song submitted confirmation
+  
     newSocket.on('songSubmitted', ({ success }) => {
-      if (success) {
-        console.log('Song successfully submitted');
-      }
+      if (success) console.log('Song successfully submitted');
     });
-    
-    // Handle vote submitted confirmation
+  
     newSocket.on('voteSubmitted', ({ success }) => {
-      if (success) {
-        console.log('Vote successfully submitted');
-      }
+      if (success) console.log('Vote successfully submitted');
     });
-    
-    // Handle playback index update
+  
     newSocket.on('playbackUpdate', ({ index }) => {
       setCurrentPlayingIndex(index);
+      setSongProgress(prev => ({ ...prev, [index]: 30 }));
     });
-    
-    // Handle error
+  
     newSocket.on('gameError', ({ message }) => {
       console.error('Game error:', message);
       Alert.alert('Game Error', message);
     });
-    
-    // Start animations
+  
     Animated.parallel([
-      Animated.timing(fadeAnim, {
-        toValue: 1,
-        duration: 400,
-        useNativeDriver: true
-      }),
-      Animated.timing(scaleAnim, {
-        toValue: 1,
-        duration: 400,
-        useNativeDriver: true
-      })
+      Animated.timing(fadeAnim, { toValue: 1, duration: 400, useNativeDriver: true }),
+      Animated.timing(scaleAnim, { toValue: 1, duration: 400, useNativeDriver: true })
     ]).start();
-    
-    // Cleanup on unmount
+  
     return () => {
       newSocket.disconnect();
+      return undefined;
     };
-  }, []);
+  }, [roomCode, spotifyId]);
 
-  // Handle timer countdown
+
+  // Phase timer countdown
   useEffect(() => {
     if (timeLeft <= 0) return;
-    
     const timer = setTimeout(() => {
-      setTimeLeft(prevTime => Math.max(0, prevTime - 1));
+      setTimeLeft(prev => Math.max(0, prev - 1));
     }, 1000);
-    
     return () => clearTimeout(timer);
   }, [timeLeft]);
 
-  // Submit song selection
+  // Song progress countdown during playback
+  useEffect(() => {
+    if (currentPhase !== PHASES.PLAYBACK || currentPlayingIndex < 0) return;
+    const interval = setInterval(() => {
+      setSongProgress(prev => ({
+        ...prev,
+        [currentPlayingIndex]: Math.max(0, (prev[currentPlayingIndex] || 30) - 1)
+      }));
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [currentPhase, currentPlayingIndex]);
+
   const handleSubmitSong = () => {
     if (!selectedSongForSubmission) {
       Alert.alert('Select a song', 'Please select a song to submit');
       return;
     }
-    
-    socket.emit('submitSong', {
-      roomCode,
-      spotifyId,
-      trackId: selectedSongForSubmission
-    });
+    socket.emit('submitSong', { roomCode, spotifyId, trackId: selectedSongForSubmission });
   };
 
-  // Submit vote
   const handleSubmitVote = () => {
     if (!selectedVote) {
       Alert.alert('Select a song', 'Please vote for a song');
       return;
     }
-    
-    socket.emit('submitVote', {
-      roomCode,
-      spotifyId,
-      voteForPlayerId: selectedVote
-    });
+    socket.emit('submitVote', { roomCode, spotifyId, voteForPlayerId: selectedVote });
   };
 
-  // Return to lobby after game ends
   const handleReturnToLobby = () => {
     router.replace('/game');
   };
 
-  // Render content based on current phase
   const renderPhaseContent = () => {
     switch (currentPhase) {
       case PHASES.CATEGORY:
@@ -215,13 +206,9 @@ export default function GamePlayScreen() {
     }
   };
 
-  // Render category reveal phase
   const renderCategoryPhase = () => (
     <Animated.View 
-      style={[
-        styles.categoryContainer,
-        { opacity: fadeAnim, transform: [{ scale: scaleAnim }] }
-      ]}
+      style={[styles.categoryContainer, { opacity: fadeAnim, transform: [{ scale: scaleAnim }] }]}
     >
       <Text style={styles.categoryLabel}>Category:</Text>
       <Text style={styles.categoryText}>{category}</Text>
@@ -231,51 +218,61 @@ export default function GamePlayScreen() {
     </Animated.View>
   );
 
-  // Render song submission phase
-  const renderSubmissionPhase = () => (
+  const renderSubmissionPhase = () => {
+  console.log('Rendering submission phase with mySongs:', mySongs);
+  return (
     <View style={styles.submissionContainer}>
       <Text style={styles.submissionTitle}>Pick Your Song</Text>
       <Text style={styles.submissionSubtitle}>
         Which of your songs best fits: "{category}"?
       </Text>
-      
       <View style={styles.timerContainer}>
         <Ionicons name="timer-outline" size={24} color="#FFAA00" />
         <Text style={styles.timerText}>{timeLeft}s</Text>
       </View>
-      
-      <FlatList
-        data={mySongs}
-        keyExtractor={(item) => item.trackId}
-        renderItem={({ item }) => (
-          <TouchableOpacity
-            style={[
-              styles.songItem,
-              selectedSongForSubmission === item.trackId && styles.selectedSongItem
-            ]}
-            onPress={() => setSelectedSongForSubmission(item.trackId)}
-          >
-            <Image
-              source={{ uri: item.trackImage || 'https://via.placeholder.com/60' }}
-              style={styles.songImage}
-            />
-            <View style={styles.songDetails}>
-              <Text style={styles.songName} numberOfLines={1}>{item.trackName}</Text>
-              <Text style={styles.songArtist} numberOfLines={1}>{item.trackArtist}</Text>
-            </View>
-            
-            <View style={styles.selectionIndicator}>
-              {selectedSongForSubmission === item.trackId ? (
-                <Ionicons name="checkmark-circle" size={24} color="#00FFFF" />
-              ) : (
-                <Ionicons name="ellipse-outline" size={24} color="#FFFFFF" />
-              )}
-            </View>
-          </TouchableOpacity>
-        )}
-        contentContainerStyle={styles.songsList}
-      />
-      
+      {mySongs.length === 0 ? (
+        <Text style={styles.noSongsText}>
+          No songs available. Please ensure you selected songs in the lobby.
+        </Text>
+      ) : (
+        <FlatList
+          data={mySongs}
+          keyExtractor={(item) => item.trackId || `${Math.random()}`} // Fallback key
+          renderItem={({ item }) => (
+            <TouchableOpacity
+              style={[
+                styles.songItem,
+                selectedSongForSubmission === item.trackId && styles.selectedSongItem
+              ]}
+              onPress={() => {
+                console.log('Selected song:', item);
+                setSelectedSongForSubmission(item.trackId);
+              }}
+            >
+              <Image
+                source={{ uri: item.trackImage || 'https://via.placeholder.com/60' }}
+                style={styles.songImage}
+              />
+              <View style={styles.songDetails}>
+                <Text style={styles.songName} numberOfLines={1}>
+                  {item.trackName || 'Unknown Track'}
+                </Text>
+                <Text style={styles.songArtist} numberOfLines={1}>
+                  {item.trackArtist || 'Unknown Artist'}
+                </Text>
+              </View>
+              <View style={styles.selectionIndicator}>
+                {selectedSongForSubmission === item.trackId ? (
+                  <Ionicons name="checkmark-circle" size={24} color="#00FFFF" />
+                ) : (
+                  <Ionicons name="ellipse-outline" size={24} color="#FFFFFF" />
+                )}
+              </View>
+            </TouchableOpacity>
+          )}
+          contentContainerStyle={styles.songsList}
+        />
+      )}
       <TouchableOpacity
         style={styles.submitButton}
         onPress={handleSubmitSong}
@@ -291,88 +288,195 @@ export default function GamePlayScreen() {
       </TouchableOpacity>
     </View>
   );
+};
 
-  // Render playback phase
-  const renderPlaybackPhase = () => (
-    <View style={styles.playbackContainer}>
-      <Text style={styles.playbackTitle}>Listening Time</Text>
-      <Text style={styles.playbackSubtitle}>
-        Listen to each song submission
-      </Text>
-      
-      {submissions.length > 0 && currentPlayingIndex >= 0 && currentPlayingIndex < submissions.length && (
-        <View style={styles.currentSongContainer}>
-          <Text style={styles.nowPlayingText}>Now Playing ({currentPlayingIndex + 1}/{submissions.length})</Text>
-          
-          <View style={styles.spotifyPlayerContainer}>
-            {token && (
-              <WebView
-                source={{
-                  html: `
-                    <html>
-                      <head>
-                        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-                        <style>
-                          body { margin: 0; padding: 0; background-color: transparent; }
-                          iframe { border: none; width: 100%; height: 80px; }
-                        </style>
-                      </head>
-                      <body>
-                        <iframe 
-                          src="https://open.spotify.com/embed/track/${submissions[currentPlayingIndex].trackId}" 
-                          frameborder="0" 
-                          allowtransparency="true" 
-                          allow="encrypted-media">
-                        </iframe>
-                      </body>
-                    </html>
-                  `
-                }}
-                style={styles.webView}
-                javaScriptEnabled={true}
-                domStorageEnabled={true}
-              />
-            )}
-          </View>
-          
-          <View style={styles.progressContainer}>
-            <View style={styles.progressBar}>
-              <View 
-                style={[
-                  styles.progressFill, 
-                  { width: `${((currentPlayingIndex + 1) / submissions.length) * 100}%` }
-                ]} 
-              />
+const renderPlaybackPhase = () => {
+    console.log('Rendering playback phase:', { currentPlayingIndex, submissions });
+    return (
+      <View style={styles.playbackContainer}>
+        <Text style={styles.playbackTitle}>Listening Time</Text>
+        <Text style={styles.playbackSubtitle}>
+          Listen to each song submission for "{category}"
+        </Text>
+        
+        {submissions.length > 0 && currentPlayingIndex >= 0 && currentPlayingIndex < submissions.length ? (
+          <View style={styles.playerContainer}>
+            <View style={styles.nowPlayingHeader}>
+              <Ionicons name="musical-notes" size={24} color="#00FFFF" style={styles.nowPlayingIcon} />
+              <Text style={styles.nowPlayingText}>
+                Now Playing ({currentPlayingIndex + 1}/{submissions.length})
+              </Text>
+            </View>
+            
+            <View style={styles.spotifyPlayerContainer}>
+              {token ? (
+                <WebView
+                  source={{
+                    html: `
+                      <html>
+                        <head>
+                          <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                          <style>
+                            body { margin: 0; padding: 0; background-color: #121212; color: white; font-family: Arial, sans-serif; }
+                            iframe { border: none; width: 100%; height: 80px; }
+                            .loader { text-align: center; padding: 10px; }
+                            .error { color: red; padding: 10px; text-align: center; }
+                          </style>
+                        </head>
+                        <body>
+                          <div class="loader" id="loader">Loading Spotify player...</div>
+                          <iframe 
+                            id="spotifyFrame"
+                            src="https://open.spotify.com/embed/track/${submissions[currentPlayingIndex].trackId}?autoplay=1" 
+                            frameborder="0" 
+                            allowtransparency="true" 
+                            allow="encrypted-media; autoplay"
+                            onload="document.getElementById('loader').style.display = 'none';"
+                          ></iframe>
+                          <script>
+                            // Add error handling
+                            setTimeout(function() {
+                              if (document.getElementById('loader').style.display !== 'none') {
+                                document.getElementById('loader').innerHTML = 'Player is taking longer than expected to load...';
+                              }
+                            }, 5000);
+                          </script>
+                        </body>
+                      </html>
+                    `
+                  }}
+                  style={styles.webView}
+                  javaScriptEnabled={true}
+                  domStorageEnabled={true}
+                  mediaPlaybackRequiresUserAction={false}
+                  onError={(syntheticEvent) => {
+                    const { nativeEvent } = syntheticEvent;
+                    console.error('WebView error:', nativeEvent);
+                  }}
+                />
+              ) : (
+                <View style={styles.errorContainer}>
+                  <Ionicons name="alert-circle" size={24} color="#FF5555" />
+                  <Text style={styles.noTokenText}>Spotify token not available</Text>
+                </View>
+              )}
+            </View>
+            
+            <View style={styles.songDetailsContainer}>
+              {(() => {
+                const song: Song | undefined = gameState?.players
+                  .find((p: Player) => p.spotifyId === submissions[currentPlayingIndex]?.playerId)
+                  ?.selectedSongs.find((s: Song) => s.trackId === submissions[currentPlayingIndex]?.trackId);
+                
+                return song ? (
+                  <>
+                    <Text style={styles.songTitle}>{song.trackName}</Text>
+                    <Text style={styles.songArtist}>by {song.trackArtist}</Text>
+                  </>
+                ) : (
+                  <Text style={styles.songTitle}>Unknown Song</Text>
+                );
+              })()}
+            </View>
+            
+            <View style={styles.progressBarContainer}>
+              <Text style={styles.timeRemaining}>
+                {songProgress[currentPlayingIndex] || 0}s remaining
+              </Text>
+              <View style={styles.progressBar}>
+                <View
+                  style={[
+                    styles.progressFill,
+                    { 
+                      width: `${((songProgress[currentPlayingIndex] || 0) / 30) * 100}%`,
+                      backgroundColor: '#00FFFF'
+                    }
+                  ]}
+                />
+              </View>
             </View>
           </View>
-        </View>
-      )}
-      
-      <Text style={styles.playbackInstructions}>
-        Get ready to vote for your favorite song in this category!
-      </Text>
-    </View>
-  );
-
-  // Render voting phase
+        ) : (
+          <View style={styles.errorContainer}>
+            <Ionicons name="alert-circle" size={24} color="#FF5555" />
+            <Text style={styles.noSongsText}>No submissions to play</Text>
+          </View>
+        )}
+        
+        <Text style={styles.playersListTitle}>All Submissions</Text>
+        <FlatList
+          data={submissions}
+          keyExtractor={(item, index) => `${item.playerId}-${index}`}
+          renderItem={({ item, index }) => {
+            const progress = songProgress[index] || 0;
+            const isPlaying = index === currentPlayingIndex;
+            const player: Player | undefined = gameState?.players.find((p: Player) => p.spotifyId === item.playerId);
+            const song = player?.selectedSongs.find((s) => s.trackId === item.trackId);
+            
+            return (
+              <View 
+                style={[
+                  styles.songPlaybackItem,
+                  isPlaying && styles.currentPlaybackItem
+                ]}
+              >
+                <View style={styles.songPlaybackInfo}>
+                  <Text style={styles.songPlaybackNumber}>{index + 1}.</Text>
+                  <View style={styles.songPlaybackDetails}>
+                    <Text style={styles.songPlaybackName}>
+                      {song?.trackName || 'Unknown Song'}
+                    </Text>
+                    <Text style={styles.songPlaybackArtist}>
+                      by {song?.trackArtist || 'Unknown Artist'}
+                    </Text>
+                  </View>
+                  {isPlaying && (
+                    <View style={styles.playingIndicator}>
+                      <Ionicons name="musical-notes" size={18} color="#00FFFF" />
+                      <Text style={styles.nowPlayingIndicatorText}>Now Playing</Text>
+                    </View>
+                  )}
+                </View>
+                
+                {isPlaying && (
+                  <View style={styles.miniProgressBar}>
+                    <View
+                      style={[
+                        styles.miniProgressFill,
+                        { width: `${(progress / 30) * 100}%` }
+                      ]}
+                    />
+                  </View>
+                )}
+              </View>
+            );
+          }}
+          contentContainerStyle={styles.submissionsList}
+        />
+        
+        <Text style={styles.playbackInstructions}>
+          Get ready to vote for your favorite song in this category!
+        </Text>
+      </View>
+    );
+  };
   const renderVotingPhase = () => (
     <View style={styles.votingContainer}>
       <Text style={styles.votingTitle}>Vote Time</Text>
       <Text style={styles.votingSubtitle}>
         Which song best fits: "{category}"?
       </Text>
-      
       <View style={styles.timerContainer}>
         <Ionicons name="timer-outline" size={24} color="#FFAA00" />
         <Text style={styles.timerText}>{timeLeft}s</Text>
       </View>
-      
       <FlatList
         data={submissions}
         keyExtractor={(item, index) => `${item.playerId}-${index}`}
         renderItem={({ item, index }) => {
-          // Don't allow voting for your own submission
           const isOwnSubmission = item.playerId === spotifyId;
+          const player = gameState?.players.find((p: any) => p.spotifyId === item.playerId);
+          const song = player?.selectedSongs.find((s: any) => s.trackId === item.trackId);
           return (
             <TouchableOpacity
               style={[
@@ -384,14 +488,15 @@ export default function GamePlayScreen() {
               disabled={isOwnSubmission}
             >
               <View style={styles.submissionInfo}>
-                <Text style={styles.submissionNumber}>Song {index + 1}</Text>
+                <Text style={styles.submissionNumber}>
+                  {song?.trackName || `Song ${index + 1}`}
+                </Text>
                 {isOwnSubmission && (
                   <View style={styles.ownSubmissionBadge}>
                     <Text style={styles.ownSubmissionText}>Your Song</Text>
                   </View>
                 )}
               </View>
-              
               <View style={styles.selectionIndicator}>
                 {selectedVote === item.playerId ? (
                   <Ionicons name="checkmark-circle" size={24} color="#00FFFF" />
@@ -404,7 +509,6 @@ export default function GamePlayScreen() {
         }}
         contentContainerStyle={styles.submissionsList}
       />
-      
       <TouchableOpacity
         style={styles.voteButton}
         onPress={handleSubmitVote}
@@ -421,15 +525,12 @@ export default function GamePlayScreen() {
     </View>
   );
 
-  // Render results phase
   const renderResultsPhase = () => (
     <View style={styles.resultsContainer}>
       {isGameCompleted ? (
-        // Final game results
         <View style={styles.finalResultsContainer}>
           <Text style={styles.finalResultsTitle}>Game Over!</Text>
           <Text style={styles.finalResultsSubtitle}>Final Standings</Text>
-          
           <FlatList
             data={leaderboard.sort((a, b) => b.points - a.points)}
             keyExtractor={(item) => item.spotifyId}
@@ -442,14 +543,12 @@ export default function GamePlayScreen() {
                 <View style={styles.rankContainer}>
                   <Text style={styles.rankText}>{index + 1}</Text>
                 </View>
-                
                 <View style={styles.playerResultInfo}>
                   <Text style={styles.playerResultName}>
                     {item.username}
                     {item.spotifyId === spotifyId && " (You)"}
                   </Text>
                 </View>
-                
                 <View style={styles.pointsContainer}>
                   <Text style={styles.pointsText}>{item.points}</Text>
                 </View>
@@ -457,7 +556,6 @@ export default function GamePlayScreen() {
             )}
             contentContainerStyle={styles.leaderboardList}
           />
-          
           <TouchableOpacity
             style={styles.backToLobbyButton}
             onPress={handleReturnToLobby}
@@ -471,41 +569,18 @@ export default function GamePlayScreen() {
           </TouchableOpacity>
         </View>
       ) : (
-        // Round results
         <View style={styles.roundResultsContainer}>
           <Text style={styles.roundResultsTitle}>Round {round} Results</Text>
           <Text style={styles.roundResultsSubtitle}>"{category}"</Text>
-          
           {roundResults && (
             <FlatList
               data={roundResults.submissions.sort((a: any, b: any) => b.votes.length - a.votes.length)}
               keyExtractor={(item: any) => item.playerId}
-              renderItem={({ item, index }: { item: any, index: number }) => {
+              renderItem={({ item, index }) => {
                 const isWinner = index === 0;
                 const isOwnSubmission = item.playerId === spotifyId;
-                interface Player {
-                    spotifyId: string;
-                    username: string;
-                    selectedSongs: any[];
-                    points: number;
-                }
-
-                interface GameState {
-                    currentPhase: string;
-                    currentRound: number;
-                    totalRounds: number;
-                    category: string;
-                    timeLeft: number;
-                    players: Player[];
-                    submissions: any[];
-                    roundResults: any;
-                    leaderboard: Player[];
-                    isLastRound: boolean;
-                }
-
-                const player = gameState.players.find((p: Player) => p.spotifyId === item.playerId);
-                const playerName = player ? player.username : 'Unknown';
-                
+                const player = gameState?.players.find((p: any) => p.spotifyId === item.playerId);
+                const song = player?.selectedSongs.find((s: any) => s.trackId === item.trackId);
                 return (
                   <View style={[
                     styles.songResultItem,
@@ -517,17 +592,15 @@ export default function GamePlayScreen() {
                         {index + 1}
                       </Text>
                     </View>
-                    
                     <View style={styles.songResultInfo}>
                       <Text style={styles.songResultName}>
-                        {playerName}
+                        {song?.trackName || 'Unknown'} by {player?.username || 'Unknown'}
                         {isOwnSubmission && " (You)"}
                       </Text>
                       <Text style={styles.songResultPoints}>
                         +{isWinner ? 3 : (index === 1 ? 2 : (item.votes.length > 0 ? 1 : 0))} points
                       </Text>
                     </View>
-                    
                     <View style={styles.votesContainer}>
                       <Text style={styles.votesCount}>{item.votes.length}</Text>
                       <Ionicons name="heart" size={16} color="#FF5599" />
@@ -538,12 +611,10 @@ export default function GamePlayScreen() {
               contentContainerStyle={styles.resultsListContainer}
             />
           )}
-          
           <View style={styles.leaderboardPreviewContainer}>
             <Text style={styles.leaderboardPreviewTitle}>Current Standings</Text>
-            
             <FlatList
-              data={leaderboard.slice(0, 3)} // Show top 3
+              data={leaderboard.slice(0, 3)}
               keyExtractor={(item) => item.spotifyId}
               renderItem={({ item, index }) => (
                 <View style={styles.leaderboardPreviewItem}>
@@ -557,7 +628,6 @@ export default function GamePlayScreen() {
               )}
             />
           </View>
-          
           <Text style={styles.nextRoundText}>
             Next round starting soon...
           </Text>
@@ -566,14 +636,12 @@ export default function GamePlayScreen() {
     </View>
   );
 
-  // Main render
   return (
     <LinearGradient colors={['#1A2151', '#323B71']} style={styles.container}>
       <View style={styles.header}>
         <View style={styles.roundInfo}>
           <Text style={styles.roundText}>Round {round}/{totalRounds}</Text>
         </View>
-        
         <View style={styles.phaseContainer}>
           <Text style={styles.phaseText}>{currentPhase.toUpperCase()}</Text>
           {timeLeft > 0 && currentPhase !== PHASES.PLAYBACK && (
@@ -581,7 +649,6 @@ export default function GamePlayScreen() {
           )}
         </View>
       </View>
-      
       <View style={styles.mainContent}>
         {renderPhaseContent()}
       </View>
@@ -592,6 +659,29 @@ export default function GamePlayScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
+  },
+  currentSongContainer: {
+    marginBottom: 24,
+  },
+  spotifyPlayerContainer: {
+    width: '100%',
+    height: 80,
+    marginBottom: 24,
+  },
+  noTokenText: {
+    fontSize: 16,
+    color: '#FF5555',
+    textAlign: 'center',
+  },
+  noSongsText: {
+    fontSize: 16,
+    color: '#FFFFFF',
+    textAlign: 'center',
+    marginTop: 20,
+  },
+  webView: {
+    width: '100%',
+    height: '100%',
   },
   header: {
     flexDirection: 'row',
@@ -768,31 +858,25 @@ const styles = StyleSheet.create({
     marginBottom: 24,
     textAlign: 'center',
   },
-  currentSongContainer: {
+  songPlaybackItem: {
+    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    borderRadius: 12,
+    padding: 12,
+    marginBottom: 10,
     width: '100%',
-    alignItems: 'center',
-    marginBottom: 24,
+  },
+  songPlaybackInfo: {
+    marginBottom: 8,
+  },
+  songPlaybackName: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#FFFFFF',
   },
   nowPlayingText: {
-    fontSize: 16,
-    color: '#FFFFFF',
-    marginBottom: 12,
-  },
-  spotifyPlayerContainer: {
-    width: '100%',
-    height: 80,
-    backgroundColor: '#191414',
-    borderRadius: 8,
-    overflow: 'hidden',
-    marginBottom: 16,
-  },
-  webView: {
-    flex: 1,
-    backgroundColor: 'transparent',
-  },
-  progressContainer: {
-    width: '100%',
-    paddingHorizontal: 12,
+    fontSize: 14,
+    color: '#00FFFF',
+    marginTop: 4,
   },
   progressBar: {
     height: 8,
@@ -802,7 +886,9 @@ const styles = StyleSheet.create({
   },
   progressFill: {
     height: '100%',
-    backgroundColor: '#00FFFF',
+  },
+  submissionsList: {
+    paddingBottom: 16,
   },
   playbackInstructions: {
     fontSize: 18,
@@ -827,9 +913,6 @@ const styles = StyleSheet.create({
     fontSize: 16,
     color: '#CCDDFF',
     marginBottom: 16,
-  },
-  submissionsList: {
-    paddingBottom: 16,
   },
   submissionItem: {
     flexDirection: 'row',
@@ -1071,4 +1154,98 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
     marginTop: 20,
   },
+  playerContainer: {
+    backgroundColor: 'rgba(0, 0, 0, 0.3)',
+    borderRadius: 12,
+    padding: 16,
+    marginBottom: 20,
+    width: '100%',
+  },
+  nowPlayingHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  nowPlayingIcon: {
+    marginRight: 8,
+  },
+  debugText: {
+    color: '#CCDDFF',
+    fontSize: 12,
+    marginBottom: 8,
+  },
+  errorContainer: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 20,
+  },
+  songDetailsContainer: {
+    marginTop: 12,
+    alignItems: 'center',
+  },
+  songTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#FFFFFF',
+    textAlign: 'center',
+  },
+ 
+  progressBarContainer: {
+    marginTop: 12,
+  },
+  timeRemaining: {
+    fontSize: 14,
+    color: '#FFFFFF',
+    textAlign: 'right',
+    marginBottom: 4,
+  },
+  playersListTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#FFFFFF',
+    marginBottom: 12,
+  },
+  songPlaybackDetails: {
+    flex: 1,
+  },
+  songPlaybackNumber: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#FFFFFF',
+    marginRight: 8,
+  },
+  songPlaybackArtist: {
+    fontSize: 12,
+    color: '#CCDDFF',
+  },
+  currentPlaybackItem: {
+    backgroundColor: 'rgba(0, 255, 255, 0.1)',
+    borderLeftWidth: 3,
+    borderLeftColor: '#00FFFF',
+  },
+  playingIndicator: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(0, 255, 255, 0.1)',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 12,
+  },
+  nowPlayingIndicatorText: {
+    fontSize: 12,
+    color: '#00FFFF',
+    marginLeft: 4,
+  },
+  miniProgressBar: {
+    height: 4,
+    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+    borderRadius: 2,
+    overflow: 'hidden',
+    marginTop: 8,
+  },
+  miniProgressFill: {
+    height: '100%',
+    backgroundColor: '#00FFFF',
+  },
+
 });

@@ -7,7 +7,8 @@ import {
   TouchableOpacity,
   ActivityIndicator,
   Alert,
-  FlatList
+  FlatList,
+  Switch
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter, useLocalSearchParams } from 'expo-router';
@@ -21,6 +22,8 @@ export default function CreateGameScreen() {
   const [players, setPlayers] = useState<any[]>([]);
   const [roundCount, setRoundCount] = useState(5);
   const [error, setError] = useState<string | null>(null);
+  const [testMode, setTestMode] = useState(false);
+  const [botCount, setBotCount] = useState(3); // Default to 3 bots
   
   const router = useRouter();
   
@@ -88,7 +91,10 @@ export default function CreateGameScreen() {
 
   // Start the game
   const handleStartGame = () => {
-    if (players.length < 2) {
+    // If test mode is enabled, we should account for the bot players
+    const playerCount = testMode ? players.length + botCount : players.length;
+    
+    if (playerCount < 2) {
       Alert.alert('Not enough players', 'You need at least 2 players to start a game');
       return;
     }
@@ -99,11 +105,12 @@ export default function CreateGameScreen() {
       params: { 
         roomCode: roomCode as string, 
         spotifyId: spotifyId as string,
-        username: username as string
+        username: username as string,
+        testMode: testMode ? 'true' : 'false',
+        botCount: botCount.toString()
       }
     });
   };
-
   // Render player item
   const renderPlayerItem = ({ item, index }: { item: any, index: number }) => (
     <View style={styles.playerItem}>
@@ -187,6 +194,42 @@ export default function CreateGameScreen() {
               </TouchableOpacity>
             ))}
           </View>
+        </View>
+        
+        {/* Test Mode UI */}
+        <View style={styles.testModeContainer}>
+          <Text style={styles.testModeTitle}>Test Mode</Text>
+          <View style={styles.testModeRow}>
+            <Switch
+              value={testMode}
+              onValueChange={setTestMode}
+              trackColor={{ false: '#767577', true: '#81b0ff' }}
+              thumbColor={testMode ? '#00FFFF' : '#f4f3f4'}
+            />
+            <Text style={styles.testModeLabel}>
+              {testMode ? 'Enabled' : 'Disabled'}
+            </Text>
+          </View>
+          
+          {testMode && (
+            <View style={styles.botCountContainer}>
+              <Text style={styles.botCountLabel}>Bot Players: {botCount}</Text>
+              <View style={styles.botCountControls}>
+                <TouchableOpacity
+                  style={styles.botButton}
+                  onPress={() => setBotCount(Math.max(1, botCount - 1))}
+                >
+                  <Text style={styles.botButtonText}>-</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={styles.botButton}
+                  onPress={() => setBotCount(Math.min(7, botCount + 1))}
+                >
+                  <Text style={styles.botButtonText}>+</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          )}
         </View>
       </View>
       
@@ -306,6 +349,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
+    marginBottom: 16,
   },
   roundLabel: {
     fontSize: 16,
@@ -403,5 +447,49 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontSize: 18,
     fontWeight: '700',
+  },
+  testModeContainer: {
+    marginTop: 16,
+  },
+  testModeTitle: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#FFFFFF',
+    marginBottom: 12,
+  },
+  testModeRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  testModeLabel: {
+    fontSize: 16,
+    color: '#FFFFFF',
+    marginLeft: 12,
+  },
+  botCountContainer: {
+    marginTop: 16,
+  },
+  botCountLabel: {
+    fontSize: 14,
+    color: '#FFFFFF',
+    marginBottom: 8,
+  },
+  botCountControls: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+  },
+  botButton: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginHorizontal: 10,
+  },
+  botButtonText: {
+    fontSize: 20,
+    fontWeight: '600',
+    color: '#FFFFFF',
   },
 });

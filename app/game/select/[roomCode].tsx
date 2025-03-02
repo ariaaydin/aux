@@ -1,5 +1,4 @@
-// app/game/select/[roomCode].tsx
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   View,
   Text,
@@ -8,7 +7,8 @@ import {
   TouchableOpacity,
   Image,
   ActivityIndicator,
-  Alert
+  Alert,
+  Animated
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter, useLocalSearchParams } from 'expo-router';
@@ -16,18 +16,27 @@ import { Ionicons } from '@expo/vector-icons';
 import * as SecureStore from 'expo-secure-store';
 import io from 'socket.io-client';
 
-const MAX_SONGS = 10;
+const MAX_SONGS = 5;
 const MAX_SHUFFLES = 3;
+const ANIMATION_DURATION = 500; // 500ms per song reveal
 
 export default function SongSelectionScreen() {
-  const { roomCode, spotifyId, username } = useLocalSearchParams();
+  const { roomCode, spotifyId, username, testMode, botCount } = useLocalSearchParams();
   const [loading, setLoading] = useState(true);
-  const [songs, setSongs] = useState<any[]>([]);
-  const [selectedSongs, setSelectedSongs] = useState<any[]>([]);
+  const [allSongs, setAllSongs] = useState<any[]>([]); // Store all fetched songs
+  const [revealedSongs, setRevealedSongs] = useState<any[]>([]); // Songs currently revealed
   const [shufflesLeft, setShufflesLeft] = useState(MAX_SHUFFLES);
   const [token, setToken] = useState<string | null>(null);
   const [socket, setSocket] = useState<any>(null);
   
+  // Animation values for each song (up to 5)
+  const animatedValues = useRef(
+    Array(MAX_SONGS).fill(null).map(() => ({
+      opacity: new Animated.Value(0),
+      translateY: new Animated.Value(20)
+    }))
+  ).current;
+
   const router = useRouter();
 
   // Connect to socket server
@@ -35,7 +44,6 @@ export default function SongSelectionScreen() {
     const newSocket = io('http://localhost:3000');
     setSocket(newSocket);
     
-    // Cleanup on unmount
     return () => {
       newSocket.disconnect();
     };
@@ -61,21 +69,21 @@ export default function SongSelectionScreen() {
     getToken();
   }, []);
 
-  // Fetch songs when token is available
+  // Fetch songs when token is available and animate reveal
   useEffect(() => {
     if (token) {
       fetchRandomSongs();
     }
   }, [token]);
 
-  // Fetch random songs from user's Spotify library
+  // Fetch 5 random songs from user's Spotify library
   const fetchRandomSongs = async () => {
     if (!token) return;
     
     setLoading(true);
+    setRevealedSongs([]); // Reset revealed songs
     
     try {
-      // Fetch user's saved tracks
       const response = await fetch('https://api.spotify.com/v1/me/tracks?limit=50', {
         headers: { Authorization: `Bearer ${token}` }
       });
@@ -86,20 +94,11 @@ export default function SongSelectionScreen() {
       
       const data = await response.json();
       
-      if (!data.items || data.items.length === 0) {
-        Alert.alert('No songs found', 'You need to have saved songs in your Spotify library');
+      if (!data.items || data.items.length < MAX_SONGS) {
+        Alert.alert('Not enough songs', `You need at least ${MAX_SONGS} saved songs in your Spotify library`);
         return;
       }
       
-      // Shuffle and take MAX_SONGS
-    interface Song {
-        id: string;
-        name: string;
-        artist: string;
-        image: string;
-        selected: boolean;
-    }
-
     interface SpotifyTrack {
         track: {
             id: string;
@@ -109,18 +108,25 @@ export default function SongSelectionScreen() {
         };
     }
 
-    const shuffled: Song[] = [...data.items]
+    interface Song {
+        trackId: string;
+        trackName: string;
+        trackArtist: string;
+        trackImage: string;
+    }
+
+    const shuffled: Song[] = [...data.items as SpotifyTrack[]]
         .sort(() => 0.5 - Math.random())
         .slice(0, MAX_SONGS)
         .map((item: SpotifyTrack) => ({
-            id: item.track.id,
-            name: item.track.name,
-            artist: item.track.artists.map(a => a.name).join(', '),
-            image: item.track.album.images[0]?.url || '',
-            selected: false
+            trackId: item.track.id,
+            trackName: item.track.name,
+            trackArtist: item.track.artists.map(a => a.name).join(', '),
+            trackImage: item.track.album.images[0]?.url || ''
         }));
       
-      setSongs(shuffled);
+      setAllSongs(shuffled);
+      animateSongReveal(shuffled);
     } catch (error) {
       console.error('Error fetching songs:', error);
       Alert.alert('Error', 'Failed to fetch songs from Spotify');
@@ -129,40 +135,26 @@ export default function SongSelectionScreen() {
     }
   };
 
-  // Handle song selection/deselection
-interface Song {
-    id: string;
-    name: string;
-    artist: string;
-    image: string;
-    selected: boolean;
-}
-
-const toggleSongSelection = (songId: string) => {
-    // Update songs array
-    setSongs((prevSongs: Song[]) => 
-        prevSongs.map((song: Song) => 
-            song.id === songId 
-                ? { ...song, selected: !song.selected } 
-                : song
-        )
-    );
-    
-    // Update selected songs array
-    setSelectedSongs((prevSelected: Song[]) => {
-        const song = songs.find(s => s.id === songId);
-        if (!song) return prevSelected;
-        
-        if (song.selected) {
-            // Song was selected, now deselect it
-            return prevSelected.filter(s => s.id !== songId);
-        } else {
-            // Song was not selected, now select it
-            const updatedSong = { ...song, selected: true };
-            return [...prevSelected, updatedSong];
-        }
+  // Animate revealing songs one by one
+  const animateSongReveal = (newSongs: any[]) => {
+    newSongs.forEach((song, index) => {
+      setTimeout(() => {
+        setRevealedSongs(prev => [...prev, song]);
+        Animated.parallel([
+          Animated.timing(animatedValues[index].opacity, {
+            toValue: 1,
+            duration: ANIMATION_DURATION,
+            useNativeDriver: true
+          }),
+          Animated.timing(animatedValues[index].translateY, {
+            toValue: 0,
+            duration: ANIMATION_DURATION,
+            useNativeDriver: true
+          })
+        ]).start();
+      }, index * (ANIMATION_DURATION + 200)); // 200ms delay between each song
     });
-};
+  };
 
   // Handle shuffling songs
   const handleShuffle = () => {
@@ -171,44 +163,48 @@ const toggleSongSelection = (songId: string) => {
       return;
     }
     
-    // Decrement shuffles
     setShufflesLeft(prev => prev - 1);
-    
-    // Fetch new random songs
+    // Reset animations
+    animatedValues.forEach(val => {
+      val.opacity.setValue(0);
+      val.translateY.setValue(20);
+    });
     fetchRandomSongs();
-    
-    // Clear selected songs
-    setSelectedSongs([]);
   };
 
-  // Submit selected songs and set player as ready
+  // Submit the 5 displayed songs and set player as ready
   const handleReady = () => {
-    if (selectedSongs.length < 5) {
-      Alert.alert('Not enough songs', 'Please select at least 5 songs');
-      return;
-    }
-    
     if (!socket) {
       Alert.alert('Connection error', 'Socket not connected');
       return;
     }
     
-    // Transform selected songs for sending
-    const songData = selectedSongs.map(song => ({
-      trackId: song.id,
-      trackName: song.name,
-      trackArtist: song.artist,
-      trackImage: song.image
+    if (revealedSongs.length < MAX_SONGS) {
+      Alert.alert('Loading incomplete', 'Please wait for all songs to load');
+      return;
+    }
+    
+    const songData = revealedSongs.map(song => ({
+      trackId: song.trackId,
+      trackName: song.trackName,
+      trackArtist: song.trackArtist,
+      trackImage: song.trackImage
     }));
     
-    // Send ready status to server
     socket.emit('setReady', { 
       roomCode, 
       spotifyId, 
       selectedSongs: songData 
     });
     
-    // Navigate to waiting screen
+    if (testMode === 'true') {
+      socket.emit('enableTestMode', {
+        roomCode,
+        spotifyId,
+        botCount: parseInt(botCount as string, 10) || 3
+      });
+    }
+    
     router.push({
       pathname: '/game/waiting/[roomCode]',
       params: { 
@@ -220,37 +216,32 @@ const toggleSongSelection = (songId: string) => {
   };
 
   // Render song item
-  const renderSongItem = ({ item }: { item: Song }) => (
-    <TouchableOpacity
-      style={[styles.songItem, item.selected && styles.selectedSongItem]}
-      onPress={() => toggleSongSelection(item.id)}
+  const renderSongItem = ({ item, index }: { item: any; index: number }) => (
+    <Animated.View
+      style={[
+        styles.songItem,
+        {
+          opacity: animatedValues[index].opacity,
+          transform: [{ translateY: animatedValues[index].translateY }]
+        }
+      ]}
     >
       <Image
-        source={{ uri: item.image || 'https://via.placeholder.com/60' }}
+        source={{ uri: item.trackImage || 'https://via.placeholder.com/60' }}
         style={styles.songImage}
       />
-      
       <View style={styles.songDetails}>
-        <Text style={styles.songName} numberOfLines={1}>{item.name}</Text>
-        <Text style={styles.songArtist} numberOfLines={1}>{item.artist}</Text>
+        <Text style={styles.songName} numberOfLines={1}>{item.trackName}</Text>
+        <Text style={styles.songArtist} numberOfLines={1}>{item.trackArtist}</Text>
       </View>
-      
-      <View style={styles.selectionIndicator}>
-        {item.selected ? (
-          <Ionicons name="checkmark-circle" size={24} color="#00FFFF" />
-        ) : (
-          <Ionicons name="ellipse-outline" size={24} color="#FFFFFF" />
-        )}
-      </View>
-    </TouchableOpacity>
+    </Animated.View>
   );
 
-  // Loading state
   if (loading) {
     return (
       <LinearGradient colors={['#1A2151', '#323B71']} style={styles.loadingContainer}>
         <ActivityIndicator size="large" color="#00FFFF" />
-        <Text style={styles.loadingText}>Fetching songs from Spotify...</Text>
+        <Text style={styles.loadingText}>Fetching your songs...</Text>
       </LinearGradient>
     );
   }
@@ -258,18 +249,13 @@ const toggleSongSelection = (songId: string) => {
   return (
     <LinearGradient colors={['#1A2151', '#323B71']} style={styles.container}>
       <View style={styles.header}>
-        <Text style={styles.headerTitle}>Select Your Songs</Text>
+        <Text style={styles.headerTitle}>Your Songs</Text>
         <Text style={styles.headerSubtitle}>
-          Choose songs you'll use during the game
+          Watch as your 5 songs are revealed! Shuffle if you want different ones.
         </Text>
       </View>
       
       <View style={styles.statsContainer}>
-        <View style={styles.statItem}>
-          <Text style={styles.statValue}>{selectedSongs.length}</Text>
-          <Text style={styles.statLabel}>Selected</Text>
-        </View>
-        
         <View style={styles.statItem}>
           <Text style={styles.statValue}>{shufflesLeft}</Text>
           <Text style={styles.statLabel}>Shuffles Left</Text>
@@ -277,8 +263,8 @@ const toggleSongSelection = (songId: string) => {
       </View>
       
       <FlatList
-        data={songs}
-        keyExtractor={(item) => item.id}
+        data={revealedSongs}
+        keyExtractor={(item) => item.trackId}
         renderItem={renderSongItem}
         contentContainerStyle={styles.songsList}
       />
@@ -301,10 +287,10 @@ const toggleSongSelection = (songId: string) => {
         <TouchableOpacity
           style={styles.readyButton}
           onPress={handleReady}
-          disabled={selectedSongs.length < 5}
+          disabled={revealedSongs.length < MAX_SONGS} // Disable until all songs reveal
         >
           <LinearGradient
-            colors={selectedSongs.length >= 5 ? ['#00FFAA', '#00AAFF'] : ['#666666', '#444444']}
+            colors={revealedSongs.length >= MAX_SONGS ? ['#00FFAA', '#00AAFF'] : ['#666666', '#444444']}
             style={styles.buttonGradient}
           >
             <Text style={styles.buttonText}>I'm Ready</Text>
@@ -346,10 +332,11 @@ const styles = StyleSheet.create({
     fontSize: 16,
     color: '#CCDDFF',
     opacity: 0.8,
+    textAlign: 'center',
   },
   statsContainer: {
     flexDirection: 'row',
-    justifyContent: 'space-around',
+    justifyContent: 'center',
     marginBottom: 20,
   },
   statItem: {
@@ -376,11 +363,6 @@ const styles = StyleSheet.create({
     padding: 12,
     marginBottom: 10,
   },
-  selectedSongItem: {
-    backgroundColor: 'rgba(0, 255, 255, 0.1)',
-    borderWidth: 1,
-    borderColor: '#00FFFF',
-  },
   songImage: {
     width: 50,
     height: 50,
@@ -400,9 +382,6 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: '#CCDDFF',
     opacity: 0.8,
-  },
-  selectionIndicator: {
-    paddingHorizontal: 8,
   },
   bottomButtons: {
     flexDirection: 'row',

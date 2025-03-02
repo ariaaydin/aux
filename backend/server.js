@@ -749,13 +749,12 @@ const GAME_CATEGORIES = [
 
 // Phase durations in seconds
 const PHASE_DURATIONS = {
-  category: 3,
-  submission: 15,
-  playback: 30,  // Will vary based on number of submissions
-  voting: 15,
-  results: 10
+  category: 10,    // Increased from 3s
+  submission: 10,  // Increased from 15s
+  playback: 15,    // Per song duration, will be multiplied by number of submissions
+  voting: 10,      // Increased from 15s
+  results: 10      // Increased from 10s
 };
-
 // Socket to room mapping for quick access
 const socketToRoom = {};
 
@@ -769,26 +768,77 @@ const generateRoomCode = () => {
   return code;
 };
 
+const gameStateForClient = (gameRoom) => {
+  const leaderboard = gameRoom.players.map(player => ({
+    spotifyId: player.spotifyId,
+    username: player.username,
+    points: player.points
+  })).sort((a, b) => b.points - a.points);
+
+  const currentRoundIndex = gameRoom.currentRound - 1;
+  let timeLeft = 0;
+  let category = '';
+  let submissions = [];
+  let currentPhase = '';
+  let roundResults = null;
+
+  if (currentRoundIndex >= 0 && currentRoundIndex < gameRoom.rounds.length) {
+    const currentRound = gameRoom.rounds[currentRoundIndex];
+    currentPhase = currentRound.phase;
+    category = currentRound.category;
+    timeLeft = Math.max(0, Math.floor((new Date(currentRound.phaseEndTime) - new Date()) / 1000));
+    if (currentRound.phase === 'playback' || currentRound.phase === 'voting') {
+      submissions = currentRound.submissions.map(sub => ({
+        playerId: sub.playerId,
+        trackId: sub.trackId
+      }));
+    }
+    if (currentRound.phase === 'results') {
+      roundResults = {
+        submissions: currentRound.submissions.map(sub => ({
+          playerId: sub.playerId,
+          trackId: sub.trackId,
+          votes: sub.votes
+        }))
+      };
+    }
+  }
+
+  return {
+    roomCode: gameRoom.roomCode,
+    status: gameRoom.status,
+    players: gameRoom.players.map(p => ({
+      spotifyId: p.spotifyId,
+      username: p.username,
+      selectedSongs: p.selectedSongs || [],
+      points: p.points
+    })),
+    currentRound: gameRoom.currentRound,
+    totalRounds: gameRoom.totalRounds,
+    currentPhase,
+    category,
+    timeLeft,
+    submissions,
+    roundResults,
+    leaderboard,
+    isLastRound: gameRoom.currentRound >= gameRoom.totalRounds
+  };
+};
+
 // Helper function to transition to the next game phase
+// Replace your existing transitionToNextPhase function with this one
 const transitionToNextPhase = async (roomCode) => {
   try {
     const gameRoom = await GameRoom.findOne({ roomCode });
-    
-    if (!gameRoom || gameRoom.status !== 'playing') {
-      return;
-    }
-    
+    if (!gameRoom || gameRoom.status !== 'playing') return;
+
     const currentRoundIndex = gameRoom.currentRound - 1;
-    
-    if (currentRoundIndex < 0 || currentRoundIndex >= gameRoom.rounds.length) {
-      return;
-    }
-    
+    if (currentRoundIndex < 0 || currentRoundIndex >= gameRoom.rounds.length) return;
+
     const currentRound = gameRoom.rounds[currentRoundIndex];
     let nextPhase;
     let phaseDuration;
-    
-    // Determine next phase based on current phase
+
     switch (currentRound.phase) {
       case 'category':
         nextPhase = 'submission';
@@ -796,12 +846,15 @@ const transitionToNextPhase = async (roomCode) => {
         break;
       case 'submission':
         nextPhase = 'playback';
-        // Calculate playback duration based on number of submissions
-        // Each submission gets 10 seconds
-        phaseDuration = Math.max(10, currentRound.submissions.length * 10);
-        
-        // Start playback
-        startPlaybackSequence(roomCode, currentRound.submissions);
+        phaseDuration = PHASE_DURATIONS.playback * currentRound.submissions.length;
+        // Start playback sequence here
+        if (currentRound.submissions.length > 0) {
+          startPlaybackSequence(roomCode, currentRound.submissions);
+        } else {
+          console.log('No submissions to play, skipping to voting');
+          nextPhase = 'voting';
+          phaseDuration = PHASE_DURATIONS.voting;
+        }
         break;
       case 'playback':
         nextPhase = 'voting';
@@ -810,25 +863,17 @@ const transitionToNextPhase = async (roomCode) => {
       case 'voting':
         nextPhase = 'results';
         phaseDuration = PHASE_DURATIONS.results;
-        
-        // Calculate round results
         calculateRoundResults(roomCode);
         break;
       case 'results':
-        // Move to next round or end game
         if (gameRoom.currentRound >= gameRoom.totalRounds) {
-          // End game
           gameRoom.status = 'completed';
           await gameRoom.save();
           io.to(roomCode).emit('gameState', gameStateForClient(gameRoom));
           return;
         }
-        
-        // Start next round
         nextPhase = 'category';
         phaseDuration = PHASE_DURATIONS.category;
-        
-        // Create next round
         gameRoom.currentRound += 1;
         gameRoom.rounds.push({
           number: gameRoom.currentRound,
@@ -837,57 +882,50 @@ const transitionToNextPhase = async (roomCode) => {
           phaseEndTime: new Date(Date.now() + (PHASE_DURATIONS.category * 1000)),
           submissions: []
         });
-        
         await gameRoom.save();
         io.to(roomCode).emit('gameState', gameStateForClient(gameRoom));
-        
-        // Schedule next phase transition
-        setTimeout(() => {
-          transitionToNextPhase(roomCode);
-        }, PHASE_DURATIONS.category * 1000);
-        
+        setTimeout(() => transitionToNextPhase(roomCode), PHASE_DURATIONS.category * 1000);
         return;
     }
-    
-    // Update phase
+
     currentRound.phase = nextPhase;
     currentRound.phaseEndTime = new Date(Date.now() + (phaseDuration * 1000));
-    
     await gameRoom.save();
-    
-    // Emit updated game state
+
     io.to(roomCode).emit('gameState', gameStateForClient(gameRoom));
-    
-    // Schedule next phase transition
-    setTimeout(() => {
-      transitionToNextPhase(roomCode);
-    }, phaseDuration * 1000);
-    
+
+    if (nextPhase === 'submission') {
+      setTimeout(() => handleBotSubmissions(roomCode), 2000); // Adjusted delay
+    } else if (nextPhase === 'voting') {
+      setTimeout(() => handleBotVotes(roomCode), 5000); // Adjusted delay
+    }
+
+    // Only set timeout for non-playback phases, as playback is handled by startPlaybackSequence
+    if (nextPhase !== 'playback') {
+      setTimeout(() => transitionToNextPhase(roomCode), phaseDuration * 1000);
+    }
   } catch (error) {
     console.error('Error transitioning game phase:', error);
   }
 };
 
-// Helper function to start playback sequence
+// Update playback sequence
 const startPlaybackSequence = (roomCode, submissions) => {
+  console.log('Starting playback sequence for room:', roomCode, 'with submissions:', submissions);
   let currentIndex = 0;
-  
-  // Emit first track
   io.to(roomCode).emit('playbackUpdate', { index: currentIndex });
-  
-  // Schedule playback of each track
+
   const interval = setInterval(() => {
     currentIndex++;
-    
     if (currentIndex >= submissions.length) {
       clearInterval(interval);
-      // End playback phase early
+      console.log('Playback complete, transitioning to voting for room:', roomCode);
       transitionToNextPhase(roomCode);
       return;
     }
-    
+    console.log('Emitting playback update:', { index: currentIndex });
     io.to(roomCode).emit('playbackUpdate', { index: currentIndex });
-  }, 10000); // 10 seconds per track
+  }, PHASE_DURATIONS.playback * 1000); // 30s per track
 };
 
 // Helper function to calculate round results
@@ -942,71 +980,16 @@ const calculateRoundResults = async (roomCode) => {
   }
 };
 
-// Helper function to get game state for client (filtering out sensitive info)
-const gameStateForClient = (gameRoom) => {
-  // Sort players by points for leaderboard
-  const leaderboard = gameRoom.players.map(player => ({
-    spotifyId: player.spotifyId,
-    username: player.username,
-    points: player.points
-  })).sort((a, b) => b.points - a.points);
-  
-  const currentRoundIndex = gameRoom.currentRound - 1;
-  let timeLeft = 0;
-  let category = '';
-  let submissions = [];
-  let currentPhase = '';
-  let roundResults = null;
-  
-  if (currentRoundIndex >= 0 && currentRoundIndex < gameRoom.rounds.length) {
-    const currentRound = gameRoom.rounds[currentRoundIndex];
-    currentPhase = currentRound.phase;
-    category = currentRound.category;
-    
-    // Calculate time left
-    if (currentRound.phaseEndTime) {
-      timeLeft = Math.max(0, Math.floor((new Date(currentRound.phaseEndTime) - new Date()) / 1000));
-    }
-    
-    // Include submissions for playback and voting phases
-    if (currentRound.phase === 'playback' || currentRound.phase === 'voting') {
-      submissions = currentRound.submissions.map(sub => ({
-        playerId: sub.playerId,
-        trackId: sub.trackId
-      }));
-    }
-    
-    // Include results for results phase
-    if (currentRound.phase === 'results') {
-      roundResults = {
-        submissions: currentRound.submissions.map(sub => ({
-          playerId: sub.playerId,
-          trackId: sub.trackId,
-          votes: sub.votes
-        }))
-      };
-    }
-  }
-  
-  return {
-    roomCode: gameRoom.roomCode,
-    status: gameRoom.status,
-    players: gameRoom.players,
-    currentRound: gameRoom.currentRound,
-    totalRounds: gameRoom.totalRounds,
-    currentPhase,
-    category,
-    timeLeft,
-    submissions,
-    roundResults,
-    leaderboard,
-    isLastRound: gameRoom.currentRound >= gameRoom.totalRounds
-  };
-};
 
 // Socket.io connection handler
 io.on('connection', (socket) => {
   console.log('New client connected:', socket.id);
+
+  socket.on('enableTestMode', async ({ roomCode, spotifyId, botCount }) => {
+    console.log(`Enabling test mode with ${botCount} bots for room ${roomCode}`);
+    await createBotPlayers(roomCode, botCount, spotifyId);
+  });
+  
   
   // Create a new game room
   socket.on('createRoom', async ({ spotifyId, username }) => {
@@ -1098,34 +1081,23 @@ io.on('connection', (socket) => {
   socket.on('setReady', async ({ roomCode, spotifyId, selectedSongs }) => {
     try {
       const gameRoom = await GameRoom.findOne({ roomCode });
-      
       if (!gameRoom) {
         return socket.emit('gameError', { message: 'Room not found' });
       }
-      
-      // Update player's ready status and selected songs
+  
       const playerIndex = gameRoom.players.findIndex(p => p.spotifyId === spotifyId);
-      
       if (playerIndex !== -1) {
         gameRoom.players[playerIndex].isReady = true;
-        gameRoom.players[playerIndex].selectedSongs = selectedSongs;
+        gameRoom.players[playerIndex].selectedSongs = selectedSongs || []; // Ensure songs are saved
+        console.log(`Player ${spotifyId} set ready with songs:`, selectedSongs); // Debug log
         await gameRoom.save();
-        
-        // Notify everyone in the room
-        io.to(roomCode).emit('playerReady', { 
-          spotifyId,
-          gameState: gameRoom
-        });
-        
-        // Check if all players are ready
+  
+        io.to(roomCode).emit('playerReady', { spotifyId, gameState: gameRoom });
+  
         const allReady = gameRoom.players.every(p => p.isReady);
-        
         if (allReady && gameRoom.players.length >= 2) {
-          // Start the game
           gameRoom.status = 'playing';
           gameRoom.currentRound = 1;
-          
-          // Create the first round
           gameRoom.rounds.push({
             number: 1,
             category: gameRoom.categories[0],
@@ -1133,18 +1105,10 @@ io.on('connection', (socket) => {
             phaseEndTime: new Date(Date.now() + (PHASE_DURATIONS.category * 1000)),
             submissions: []
           });
-          
           await gameRoom.save();
-          
-          // Notify everyone that the game is starting
-          io.to(roomCode).emit('gameStarted', { 
-            gameState: gameStateForClient(gameRoom)
-          });
-          
-          // Schedule the phase transition
-          setTimeout(() => {
-            transitionToNextPhase(roomCode);
-          }, PHASE_DURATIONS.category * 1000);
+          console.log('Game starting with state:', gameStateForClient(gameRoom)); // Debug log
+          io.to(roomCode).emit('gameStarted', { gameState: gameStateForClient(gameRoom) });
+          setTimeout(() => transitionToNextPhase(roomCode), PHASE_DURATIONS.category * 1000);
         }
       }
     } catch (error) {
@@ -1152,6 +1116,9 @@ io.on('connection', (socket) => {
       socket.emit('gameError', { message: 'Failed to update ready status' });
     }
   });
+  
+  // Ensure gameStateForClient includes selectedSongs
+ 
   
   // Join an active game (reconnect)
   socket.on('joinGame', async ({ roomCode, spotifyId }) => {
@@ -1324,6 +1291,334 @@ io.on('connection', (socket) => {
     }
   });
 });
+
+
+
+
+
+
+
+
+////bot
+// In your server.js file, add this function
+// Generate bot players for test mode
+
+
+const createBotPlayers = async (roomCode, botCount, userSpotifyId) => {
+  try {
+    const gameRoom = await GameRoom.findOne({ roomCode });
+    if (!gameRoom) return;
+    
+    // Bot player names
+    const botNames = ['DJ Bot', 'RhythmMaster', 'BeatBot', 'MelodyAI', 'TuneBot', 'SonicBot', 'GrooveBot'];
+    
+    // Sample song data (you could expand this with more varied songs)
+    const sampleSongs = [
+      {
+        trackId: '4cOdK2wGLETKBW3PvgPWqT', // Bohemian Rhapsody
+        trackName: 'Bohemian Rhapsody',
+        trackArtist: 'Queen',
+        trackImage: 'https://i.scdn.co/image/ab67616d0000b273c9f744b5fe8014d3055f8b84'
+      },
+      {
+        trackId: '4u7EnebtmKWzUH433cf5Qv', // Bohemian Rhapsody
+        trackName: 'Bohemian Rhapsody - Remastered 2011',
+        trackArtist: 'Queen',
+        trackImage: 'https://i.scdn.co/image/ab67616d0000b273c9f744b5fe8014d3055f8b84'
+      },
+      {
+        trackId: '7tFiyTwD0nx5a1eklYtX2J', // Bohemian Rhapsody
+        trackName: 'Bohemian Rhapsody - Live Aid',
+        trackArtist: 'Queen',
+        trackImage: 'https://i.scdn.co/image/ab67616d0000b273c9f744b5fe8014d3055f8b84'
+      },
+      {
+        trackId: '3z8h0TU7ReDPLIbEnYhWZb', // Bohemian Rhapsody
+        trackName: 'Bohemian Rhapsody',
+        trackArtist: 'Queen',
+        trackImage: 'https://i.scdn.co/image/ab67616d0000b273c9f744b5fe8014d3055f8b84'
+      },
+      {
+        trackId: '5HNCy40Ni5BZJFw1TKzRsC', // Bohemian Rhapsody
+        trackName: 'Bohemian Rhapsody',
+        trackArtist: 'Queen',
+        trackImage: 'https://i.scdn.co/image/ab67616d0000b273c9f744b5fe8014d3055f8b84'
+      },
+      {
+        trackId: '3z8h0TU7ReDPLIbEnYhWZb', // Bohemian Rhapsody
+        trackName: 'Bohemian Rhapsody',
+        trackArtist: 'Queen',
+        trackImage: 'https://i.scdn.co/image/ab67616d0000b273c9f744b5fe8014d3055f8b84'
+      },
+      {
+        trackId: '5HNCy40Ni5BZJFw1TKzRsC', // Bohemian Rhapsody
+        trackName: 'Bohemian Rhapsody',
+        trackArtist: 'Queen',
+        trackImage: 'https://i.scdn.co/image/ab67616d0000b273c9f744b5fe8014d3055f8b84'
+      },
+      {
+        trackId: '1lCRw5FEZ1gPDNPzy1K4zW', // Bohemian Rhapsody
+        trackName: 'Sweet Child O\' Mine',
+        trackArtist: 'Guns N\' Roses',
+        trackImage: 'https://i.scdn.co/image/ab67616d0000b2736f0643d07329a71d40290983'
+      },
+      {
+        trackId: '5CQ30WqJwcep0pYcV4AMNc', // Stairway to Heaven
+        trackName: 'Stairway to Heaven - Remaster',
+        trackArtist: 'Led Zeppelin',
+        trackImage: 'https://i.scdn.co/image/ab67616d0000b27351c02a77d09dfcd53c8676d0'
+      },
+      {
+        trackId: '1BxfuPKGuaTgP7aM0Bbdwr', // Smells Like Teen Spirit
+        trackName: 'Smells Like Teen Spirit',
+        trackArtist: 'Nirvana',
+        trackImage: 'https://i.scdn.co/image/ab67616d0000b273e175a19e530c898d167d39bf'
+      }
+    ];
+    
+    // Create bot players
+    for (let i = 0; i < botCount && i < botNames.length; i++) {
+      // Generate a fake Spotify ID
+      const botSpotifyId = `bot-${i}-${Date.now()}`;
+      
+      // Create 10 random songs for this bot
+      const botSongs = [];
+      for (let j = 0; j < 10; j++) {
+        const randomSong = sampleSongs[Math.floor(Math.random() * sampleSongs.length)];
+        botSongs.push({ ...randomSong });
+      }
+      
+      // Add bot player to game room
+      gameRoom.players.push({
+        spotifyId: botSpotifyId,
+        username: botNames[i],
+        isHost: false,
+        isReady: true, // Bots are always ready
+        selectedSongs: botSongs
+      });
+    }
+    
+    await gameRoom.save();
+    
+    // Simulate someone hitting "I'm Ready"
+    // This will trigger the game start if all bots + real player are ready
+    setTimeout(async () => {
+      if (gameRoom.status === 'waiting') {
+        // Fake a "setReady" call for the real player
+        const playerIndex = gameRoom.players.findIndex(p => p.spotifyId === userSpotifyId);
+        if (playerIndex !== -1) {
+          gameRoom.players[playerIndex].isReady = true;
+          
+          // Start the game
+          gameRoom.status = 'playing';
+          gameRoom.currentRound = 1;
+          
+          // Create the first round
+          gameRoom.rounds.push({
+            number: 1,
+            category: gameRoom.categories[0],
+            phase: 'category',
+            phaseEndTime: new Date(Date.now() + (PHASE_DURATIONS.category * 1000)),
+            submissions: []
+          });
+          
+          await gameRoom.save();
+          
+          // Notify everyone that the game is starting
+          io.to(roomCode).emit('gameStarted', { 
+            gameState: gameStateForClient(gameRoom)
+          });
+          
+          // Schedule the phase transition
+          setTimeout(() => {
+            transitionToNextPhase(roomCode);
+          }, PHASE_DURATIONS.category * 1000);
+        }
+      }
+    }, 2000); // Short delay to simulate real player also hitting ready
+  } catch (error) {
+    console.error('Error creating bot players:', error);
+  }
+};
+
+
+// Handle bot submissions
+const handleBotSubmissions = async (roomCode) => {
+  try {
+    console.log(`🤖 Starting bot submissions for room ${roomCode}`);
+    const gameRoom = await GameRoom.findOne({ roomCode });
+    if (!gameRoom || gameRoom.status !== 'playing') {
+      console.log('❌ Game not in playing state for bot submissions');
+      return;
+    }
+    
+    const currentRoundIndex = gameRoom.currentRound - 1;
+    if (currentRoundIndex < 0 || currentRoundIndex >= gameRoom.rounds.length) {
+      console.log(`❌ Invalid round index for bot submissions: ${currentRoundIndex}`);
+      return;
+    }
+    
+    const currentRound = gameRoom.rounds[currentRoundIndex];
+    if (currentRound.phase !== 'submission') {
+      console.log(`❌ Not in submission phase for bot submissions, current phase: ${currentRound.phase}`);
+      return;
+    }
+    
+    // Get bot players
+    const botPlayers = gameRoom.players.filter(p => p.spotifyId.startsWith('bot-'));
+    console.log(`🤖 Bot players found: ${botPlayers.length}`);
+    
+    // Detailed bot player logging
+    botPlayers.forEach(bot => {
+      console.log(`🤖 Bot details:
+      - Username: ${bot.username}
+      - Spotify ID: ${bot.spotifyId}
+      - Selected Songs: ${bot.selectedSongs.length}`);
+    });
+    
+    // Make bots submit songs
+    for (const bot of botPlayers) {
+      // Ensure bot has selected songs
+      if (!bot.selectedSongs || bot.selectedSongs.length === 0) {
+        console.log(`❌ Bot ${bot.username} has no selected songs!`);
+        continue;
+      }
+      
+      // Pick a random song from bot's selected songs
+      const randomSongIndex = Math.floor(Math.random() * bot.selectedSongs.length);
+      const randomSong = bot.selectedSongs[randomSongIndex];
+      
+      console.log(`🎵 Bot ${bot.username} selecting song:
+      - Track ID: ${randomSong.trackId}
+      - Track Name: ${randomSong.trackName}
+      - Track Artist: ${randomSong.trackArtist}`);
+      
+      // Check if bot already submitted
+      const existingSubmissionIndex = currentRound.submissions.findIndex(s => s.playerId === bot.spotifyId);
+      
+      if (existingSubmissionIndex !== -1) {
+        // Update existing submission
+        currentRound.submissions[existingSubmissionIndex].trackId = randomSong.trackId;
+        console.log(`🔄 Updated existing submission for bot ${bot.username}`);
+      } else {
+        // Add new submission
+        currentRound.submissions.push({
+          playerId: bot.spotifyId,
+          trackId: randomSong.trackId,
+          votes: []
+        });
+        console.log(`➕ Added new submission for bot ${bot.username}`);
+      }
+    }
+    
+    await gameRoom.save();
+    
+    // Notify all players of submission count
+    io.to(roomCode).emit('submissionUpdate', { 
+      submissionCount: currentRound.submissions.length,
+      totalPlayers: gameRoom.players.length
+    });
+    
+    console.log(`📊 Submissions: ${currentRound.submissions.length}/${gameRoom.players.length}`);
+    
+    // Check if all have submitted
+    if (currentRound.submissions.length === gameRoom.players.length) {
+      console.log('✅ All players submitted, transitioning to playback phase');
+      transitionToNextPhase(roomCode);
+    }
+  } catch (error) {
+    console.error('❌ Error with bot submissions:', error);
+  }
+};
+
+// Handle bot votes
+const handleBotVotes = async (roomCode) => {
+  try {
+    console.log(`Starting bot voting process for room ${roomCode}`);
+    const gameRoom = await GameRoom.findOne({ roomCode });
+    
+    if (!gameRoom || gameRoom.status !== 'playing') {
+      console.log('Game not in playing state for bot voting');
+      return;
+    }
+    
+    const currentRoundIndex = gameRoom.currentRound - 1;
+    if (currentRoundIndex < 0 || currentRoundIndex >= gameRoom.rounds.length) {
+      console.log('Invalid round index for bot voting:', currentRoundIndex);
+      return;
+    }
+    
+    const currentRound = gameRoom.rounds[currentRoundIndex];
+    if (currentRound.phase !== 'voting') {
+      console.log('Not in voting phase for bot voting, current phase:', currentRound.phase);
+      return;
+    }
+    
+    // Get bot players
+    const botPlayers = gameRoom.players.filter(p => p.spotifyId.startsWith('bot-'));
+    console.log(`Found ${botPlayers.length} bot players to vote`);
+    
+    // Check if there are submissions to vote for
+    if (currentRound.submissions.length === 0) {
+      console.log('No submissions to vote for');
+      return;
+    }
+    
+    // Track if any votes were cast
+    let votesCast = 0;
+    
+    // Make bots vote
+    for (const bot of botPlayers) {
+      // Bots can't vote for themselves
+      const validSubmissions = currentRound.submissions.filter(s => s.playerId !== bot.spotifyId);
+      
+      console.log(`Bot ${bot.username} has ${validSubmissions.length} valid submissions to vote for`);
+      
+      if (validSubmissions.length > 0) {
+        // Pick a random submission to vote for
+        const randomSubmissionIndex = Math.floor(Math.random() * validSubmissions.length);
+        const randomSubmission = validSubmissions[randomSubmissionIndex];
+        
+        // Add bot's vote
+        const submissionIndex = currentRound.submissions.findIndex(s => s.playerId === randomSubmission.playerId);
+        if (submissionIndex !== -1) {
+          // Make sure bot hasn't already voted
+          if (!currentRound.submissions[submissionIndex].votes.includes(bot.spotifyId)) {
+            currentRound.submissions[submissionIndex].votes.push(bot.spotifyId);
+            votesCast++;
+            console.log(`Bot ${bot.username} voted for player ${randomSubmission.playerId}`);
+          } else {
+            console.log(`Bot ${bot.username} already voted for player ${randomSubmission.playerId}`);
+          }
+        }
+      }
+    }
+    
+    if (votesCast > 0) {
+      await gameRoom.save();
+      console.log(`Saved ${votesCast} bot votes`);
+      
+      // Notify all players of vote count
+      const totalVotes = currentRound.submissions.reduce((count, s) => count + s.votes.length, 0);
+      io.to(roomCode).emit('voteUpdate', { 
+        voteCount: totalVotes,
+        totalPlayers: gameRoom.players.length - currentRound.submissions.length
+      });
+      
+      // Check if all players have voted
+      if (totalVotes >= gameRoom.players.length - currentRound.submissions.length) {
+        console.log('All votes received, transitioning to results phase');
+        // Skip to results phase immediately
+        transitionToNextPhase(roomCode);
+      }
+    } else {
+      console.log('No bot votes were cast');
+    }
+    
+  } catch (error) {
+    console.error('Error with bot voting:', error);
+  }
+};
 // =========================
 // Server Start
 // =========================
