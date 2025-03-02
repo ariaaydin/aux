@@ -4,12 +4,21 @@ const express = require('express');
 const cors = require('cors');
 const mongoose = require('mongoose');
 const fetch = require('node-fetch');
+const http = require('http');
+const socketIo = require('socket.io');
 
 const app = express();
 
 // Enable CORS and JSON parsing.
 app.use(cors());
 app.use(express.json());
+const server = http.createServer(app);
+const io = socketIo(server, {
+  cors: {
+    origin: "*",
+    methods: ["GET", "POST"]
+  }
+});
 
 // MongoDB connection string
 const mongoURI =
@@ -34,6 +43,10 @@ const userSchema = new mongoose.Schema({
 });
 
 const User = mongoose.model('User', userSchema, 'users');
+
+const gameRoomSchema = require('./models/GameRoom');
+const GameRoom = mongoose.model('GameRoom', gameRoomSchema, 'gameRooms');
+
 
 // Import Song of the Day schema with updated comment functionality
 require('./models/SongOfTheDay.js');
@@ -714,11 +727,608 @@ app.get('/api/users/search/:query', async (req, res) => {
   }
 });
 
+
+
+// Add this to your server.js file before the server.listen line
+
+// Game categories
+const GAME_CATEGORIES = [
+  "Best song for a road trip",
+  "Song that makes you dance",
+  "Most nostalgic song",
+  "Best workout song",
+  "Song for a movie soundtrack",
+  "Song that tells a story",
+  "Best song to fall asleep to",
+  "Most underrated song",
+  "Song that changed your life",
+  "Best song for a first date",
+  "Song that makes you emotional",
+  "Best song for karaoke"
+];
+
+// Phase durations in seconds
+const PHASE_DURATIONS = {
+  category: 3,
+  submission: 15,
+  playback: 30,  // Will vary based on number of submissions
+  voting: 15,
+  results: 10
+};
+
+// Socket to room mapping for quick access
+const socketToRoom = {};
+
+// Helper function to generate a unique room code
+const generateRoomCode = () => {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // Removed similar looking characters
+  let code = '';
+  for (let i = 0; i < 6; i++) {
+    code += chars.charAt(Math.floor(Math.random() * chars.length));
+  }
+  return code;
+};
+
+// Helper function to transition to the next game phase
+const transitionToNextPhase = async (roomCode) => {
+  try {
+    const gameRoom = await GameRoom.findOne({ roomCode });
+    
+    if (!gameRoom || gameRoom.status !== 'playing') {
+      return;
+    }
+    
+    const currentRoundIndex = gameRoom.currentRound - 1;
+    
+    if (currentRoundIndex < 0 || currentRoundIndex >= gameRoom.rounds.length) {
+      return;
+    }
+    
+    const currentRound = gameRoom.rounds[currentRoundIndex];
+    let nextPhase;
+    let phaseDuration;
+    
+    // Determine next phase based on current phase
+    switch (currentRound.phase) {
+      case 'category':
+        nextPhase = 'submission';
+        phaseDuration = PHASE_DURATIONS.submission;
+        break;
+      case 'submission':
+        nextPhase = 'playback';
+        // Calculate playback duration based on number of submissions
+        // Each submission gets 10 seconds
+        phaseDuration = Math.max(10, currentRound.submissions.length * 10);
+        
+        // Start playback
+        startPlaybackSequence(roomCode, currentRound.submissions);
+        break;
+      case 'playback':
+        nextPhase = 'voting';
+        phaseDuration = PHASE_DURATIONS.voting;
+        break;
+      case 'voting':
+        nextPhase = 'results';
+        phaseDuration = PHASE_DURATIONS.results;
+        
+        // Calculate round results
+        calculateRoundResults(roomCode);
+        break;
+      case 'results':
+        // Move to next round or end game
+        if (gameRoom.currentRound >= gameRoom.totalRounds) {
+          // End game
+          gameRoom.status = 'completed';
+          await gameRoom.save();
+          io.to(roomCode).emit('gameState', gameStateForClient(gameRoom));
+          return;
+        }
+        
+        // Start next round
+        nextPhase = 'category';
+        phaseDuration = PHASE_DURATIONS.category;
+        
+        // Create next round
+        gameRoom.currentRound += 1;
+        gameRoom.rounds.push({
+          number: gameRoom.currentRound,
+          category: gameRoom.categories[gameRoom.currentRound - 1],
+          phase: 'category',
+          phaseEndTime: new Date(Date.now() + (PHASE_DURATIONS.category * 1000)),
+          submissions: []
+        });
+        
+        await gameRoom.save();
+        io.to(roomCode).emit('gameState', gameStateForClient(gameRoom));
+        
+        // Schedule next phase transition
+        setTimeout(() => {
+          transitionToNextPhase(roomCode);
+        }, PHASE_DURATIONS.category * 1000);
+        
+        return;
+    }
+    
+    // Update phase
+    currentRound.phase = nextPhase;
+    currentRound.phaseEndTime = new Date(Date.now() + (phaseDuration * 1000));
+    
+    await gameRoom.save();
+    
+    // Emit updated game state
+    io.to(roomCode).emit('gameState', gameStateForClient(gameRoom));
+    
+    // Schedule next phase transition
+    setTimeout(() => {
+      transitionToNextPhase(roomCode);
+    }, phaseDuration * 1000);
+    
+  } catch (error) {
+    console.error('Error transitioning game phase:', error);
+  }
+};
+
+// Helper function to start playback sequence
+const startPlaybackSequence = (roomCode, submissions) => {
+  let currentIndex = 0;
+  
+  // Emit first track
+  io.to(roomCode).emit('playbackUpdate', { index: currentIndex });
+  
+  // Schedule playback of each track
+  const interval = setInterval(() => {
+    currentIndex++;
+    
+    if (currentIndex >= submissions.length) {
+      clearInterval(interval);
+      // End playback phase early
+      transitionToNextPhase(roomCode);
+      return;
+    }
+    
+    io.to(roomCode).emit('playbackUpdate', { index: currentIndex });
+  }, 10000); // 10 seconds per track
+};
+
+// Helper function to calculate round results
+const calculateRoundResults = async (roomCode) => {
+  try {
+    const gameRoom = await GameRoom.findOne({ roomCode });
+    
+    if (!gameRoom || gameRoom.status !== 'playing') {
+      return;
+    }
+    
+    const currentRoundIndex = gameRoom.currentRound - 1;
+    
+    if (currentRoundIndex < 0 || currentRoundIndex >= gameRoom.rounds.length) {
+      return;
+    }
+    
+    const currentRound = gameRoom.rounds[currentRoundIndex];
+    
+    // Sort submissions by vote count
+    const sortedSubmissions = [...currentRound.submissions].sort(
+      (a, b) => b.votes.length - a.votes.length
+    );
+    
+    // Award points
+    sortedSubmissions.forEach((submission, index) => {
+      // Find player
+      const playerIndex = gameRoom.players.findIndex(p => p.spotifyId === submission.playerId);
+      
+      if (playerIndex !== -1) {
+        // Award points based on position
+        if (index === 0) {
+          // Winner gets 3 points
+          gameRoom.players[playerIndex].points += 3;
+        } else if (index === 1) {
+          // Runner-up gets 2 points
+          gameRoom.players[playerIndex].points += 2;
+        } else if (submission.votes.length > 0) {
+          // Others with votes get 1 point
+          gameRoom.players[playerIndex].points += 1;
+        }
+      }
+    });
+    
+    await gameRoom.save();
+    
+    // Emit updated game state with results
+    io.to(roomCode).emit('gameState', gameStateForClient(gameRoom));
+    
+  } catch (error) {
+    console.error('Error calculating round results:', error);
+  }
+};
+
+// Helper function to get game state for client (filtering out sensitive info)
+const gameStateForClient = (gameRoom) => {
+  // Sort players by points for leaderboard
+  const leaderboard = gameRoom.players.map(player => ({
+    spotifyId: player.spotifyId,
+    username: player.username,
+    points: player.points
+  })).sort((a, b) => b.points - a.points);
+  
+  const currentRoundIndex = gameRoom.currentRound - 1;
+  let timeLeft = 0;
+  let category = '';
+  let submissions = [];
+  let currentPhase = '';
+  let roundResults = null;
+  
+  if (currentRoundIndex >= 0 && currentRoundIndex < gameRoom.rounds.length) {
+    const currentRound = gameRoom.rounds[currentRoundIndex];
+    currentPhase = currentRound.phase;
+    category = currentRound.category;
+    
+    // Calculate time left
+    if (currentRound.phaseEndTime) {
+      timeLeft = Math.max(0, Math.floor((new Date(currentRound.phaseEndTime) - new Date()) / 1000));
+    }
+    
+    // Include submissions for playback and voting phases
+    if (currentRound.phase === 'playback' || currentRound.phase === 'voting') {
+      submissions = currentRound.submissions.map(sub => ({
+        playerId: sub.playerId,
+        trackId: sub.trackId
+      }));
+    }
+    
+    // Include results for results phase
+    if (currentRound.phase === 'results') {
+      roundResults = {
+        submissions: currentRound.submissions.map(sub => ({
+          playerId: sub.playerId,
+          trackId: sub.trackId,
+          votes: sub.votes
+        }))
+      };
+    }
+  }
+  
+  return {
+    roomCode: gameRoom.roomCode,
+    status: gameRoom.status,
+    players: gameRoom.players,
+    currentRound: gameRoom.currentRound,
+    totalRounds: gameRoom.totalRounds,
+    currentPhase,
+    category,
+    timeLeft,
+    submissions,
+    roundResults,
+    leaderboard,
+    isLastRound: gameRoom.currentRound >= gameRoom.totalRounds
+  };
+};
+
+// Socket.io connection handler
+io.on('connection', (socket) => {
+  console.log('New client connected:', socket.id);
+  
+  // Create a new game room
+  socket.on('createRoom', async ({ spotifyId, username }) => {
+    try {
+      let roomCode, existingRoom;
+      
+      // Generate a unique room code
+      do {
+        roomCode = generateRoomCode();
+        existingRoom = await GameRoom.findOne({ roomCode });
+      } while (existingRoom);
+      
+      // Shuffle categories and select the needed amount
+      const shuffledCategories = [...GAME_CATEGORIES].sort(() => 0.5 - Math.random());
+      
+      // Create a new game room
+      const gameRoom = new GameRoom({
+        roomCode,
+        players: [{
+          spotifyId,
+          username,
+          isHost: true,
+          isReady: false
+        }],
+        categories: shuffledCategories.slice(0, 10) // Up to 10 rounds
+      });
+      
+      await gameRoom.save();
+      
+      // Join the socket room
+      socket.join(roomCode);
+      socketToRoom[socket.id] = roomCode;
+      
+      // Send back the room code and game state
+      socket.emit('roomCreated', { 
+        roomCode, 
+        gameState: gameRoom 
+      });
+      
+    } catch (error) {
+      console.error('Error creating room:', error);
+      socket.emit('gameError', { message: 'Failed to create game room' });
+    }
+  });
+  
+  // Join an existing game room
+  socket.on('joinRoom', async ({ roomCode, spotifyId, username }) => {
+    try {
+      const gameRoom = await GameRoom.findOne({ roomCode });
+      
+      if (!gameRoom) {
+        return socket.emit('gameError', { message: 'Room not found' });
+      }
+      
+      if (gameRoom.status !== 'waiting') {
+        return socket.emit('gameError', { message: 'Game already in progress' });
+      }
+      
+      // Check if player is already in the room
+      const existingPlayerIndex = gameRoom.players.findIndex(p => p.spotifyId === spotifyId);
+      
+      if (existingPlayerIndex === -1) {
+        // Add player to the room
+        gameRoom.players.push({
+          spotifyId,
+          username,
+          isHost: false,
+          isReady: false
+        });
+        await gameRoom.save();
+      }
+      
+      // Join the socket room
+      socket.join(roomCode);
+      socketToRoom[socket.id] = roomCode;
+      
+      // Notify everyone in the room
+      io.to(roomCode).emit('playerJoined', { 
+        gameState: gameRoom 
+      });
+      
+    } catch (error) {
+      console.error('Error joining room:', error);
+      socket.emit('gameError', { message: 'Failed to join game room' });
+    }
+  });
+  
+  // Set player ready status with selected songs
+  socket.on('setReady', async ({ roomCode, spotifyId, selectedSongs }) => {
+    try {
+      const gameRoom = await GameRoom.findOne({ roomCode });
+      
+      if (!gameRoom) {
+        return socket.emit('gameError', { message: 'Room not found' });
+      }
+      
+      // Update player's ready status and selected songs
+      const playerIndex = gameRoom.players.findIndex(p => p.spotifyId === spotifyId);
+      
+      if (playerIndex !== -1) {
+        gameRoom.players[playerIndex].isReady = true;
+        gameRoom.players[playerIndex].selectedSongs = selectedSongs;
+        await gameRoom.save();
+        
+        // Notify everyone in the room
+        io.to(roomCode).emit('playerReady', { 
+          spotifyId,
+          gameState: gameRoom
+        });
+        
+        // Check if all players are ready
+        const allReady = gameRoom.players.every(p => p.isReady);
+        
+        if (allReady && gameRoom.players.length >= 2) {
+          // Start the game
+          gameRoom.status = 'playing';
+          gameRoom.currentRound = 1;
+          
+          // Create the first round
+          gameRoom.rounds.push({
+            number: 1,
+            category: gameRoom.categories[0],
+            phase: 'category',
+            phaseEndTime: new Date(Date.now() + (PHASE_DURATIONS.category * 1000)),
+            submissions: []
+          });
+          
+          await gameRoom.save();
+          
+          // Notify everyone that the game is starting
+          io.to(roomCode).emit('gameStarted', { 
+            gameState: gameStateForClient(gameRoom)
+          });
+          
+          // Schedule the phase transition
+          setTimeout(() => {
+            transitionToNextPhase(roomCode);
+          }, PHASE_DURATIONS.category * 1000);
+        }
+      }
+    } catch (error) {
+      console.error('Error setting player ready:', error);
+      socket.emit('gameError', { message: 'Failed to update ready status' });
+    }
+  });
+  
+  // Join an active game (reconnect)
+  socket.on('joinGame', async ({ roomCode, spotifyId }) => {
+    try {
+      const gameRoom = await GameRoom.findOne({ roomCode });
+      
+      if (!gameRoom) {
+        return socket.emit('gameError', { message: 'Room not found' });
+      }
+      
+      // Check if player is in the game
+      const playerExists = gameRoom.players.some(p => p.spotifyId === spotifyId);
+      
+      if (!playerExists) {
+        return socket.emit('gameError', { message: 'You are not part of this game' });
+      }
+      
+      // Join the socket room
+      socket.join(roomCode);
+      socketToRoom[socket.id] = roomCode;
+      
+      // Send current game state
+      socket.emit('gameState', gameStateForClient(gameRoom));
+      
+    } catch (error) {
+      console.error('Error joining game:', error);
+      socket.emit('gameError', { message: 'Failed to join game' });
+    }
+  });
+  
+  // Submit a song for the current round
+  socket.on('submitSong', async ({ roomCode, spotifyId, trackId }) => {
+    try {
+      const gameRoom = await GameRoom.findOne({ roomCode });
+      
+      if (!gameRoom || gameRoom.status !== 'playing') {
+        return socket.emit('gameError', { message: 'Game not in progress' });
+      }
+      
+      const currentRoundIndex = gameRoom.currentRound - 1;
+      
+      if (currentRoundIndex < 0 || currentRoundIndex >= gameRoom.rounds.length) {
+        return socket.emit('gameError', { message: 'Invalid round' });
+      }
+      
+      const currentRound = gameRoom.rounds[currentRoundIndex];
+      
+      if (currentRound.phase !== 'submission') {
+        return socket.emit('gameError', { message: 'Not in submission phase' });
+      }
+      
+      // Check if player already submitted
+      const existingSubmissionIndex = currentRound.submissions.findIndex(s => s.playerId === spotifyId);
+      
+      if (existingSubmissionIndex !== -1) {
+        // Update existing submission
+        currentRound.submissions[existingSubmissionIndex].trackId = trackId;
+      } else {
+        // Add new submission
+        currentRound.submissions.push({
+          playerId: spotifyId,
+          trackId,
+          votes: []
+        });
+      }
+      
+      await gameRoom.save();
+      
+      // Notify the player their submission was received
+      socket.emit('songSubmitted', { success: true });
+      
+      // Notify all players of submission count (not which songs)
+      io.to(roomCode).emit('submissionUpdate', { 
+        submissionCount: currentRound.submissions.length,
+        totalPlayers: gameRoom.players.length
+      });
+      
+      // Check if all players have submitted
+      if (currentRound.submissions.length === gameRoom.players.length) {
+        // Skip to playback phase immediately
+        transitionToNextPhase(roomCode);
+      }
+    } catch (error) {
+      console.error('Error submitting song:', error);
+      socket.emit('gameError', { message: 'Failed to submit song' });
+    }
+  });
+  
+  // Submit a vote
+  socket.on('submitVote', async ({ roomCode, spotifyId, voteForPlayerId }) => {
+    try {
+      const gameRoom = await GameRoom.findOne({ roomCode });
+      
+      if (!gameRoom || gameRoom.status !== 'playing') {
+        return socket.emit('gameError', { message: 'Game not in progress' });
+      }
+      
+      const currentRoundIndex = gameRoom.currentRound - 1;
+      
+      if (currentRoundIndex < 0 || currentRoundIndex >= gameRoom.rounds.length) {
+        return socket.emit('gameError', { message: 'Invalid round' });
+      }
+      
+      const currentRound = gameRoom.rounds[currentRoundIndex];
+      
+      if (currentRound.phase !== 'voting') {
+        return socket.emit('gameError', { message: 'Not in voting phase' });
+      }
+      
+      // Cannot vote for your own submission
+      if (voteForPlayerId === spotifyId) {
+        return socket.emit('gameError', { message: 'You cannot vote for your own submission' });
+      }
+      
+      // Find the submission being voted for
+      const submissionIndex = currentRound.submissions.findIndex(s => s.playerId === voteForPlayerId);
+      
+      if (submissionIndex === -1) {
+        return socket.emit('gameError', { message: 'Submission not found' });
+      }
+      
+      // Check if player already voted
+      const playerVoted = currentRound.submissions.some(s => s.votes.includes(spotifyId));
+      
+      if (playerVoted) {
+        // Remove previous vote
+        currentRound.submissions.forEach(s => {
+          s.votes = s.votes.filter(v => v !== spotifyId);
+        });
+      }
+      
+      // Add vote
+      currentRound.submissions[submissionIndex].votes.push(spotifyId);
+      
+      await gameRoom.save();
+      
+      // Notify the player their vote was received
+      socket.emit('voteSubmitted', { success: true });
+      
+      // Notify all players of vote count (not which songs)
+      io.to(roomCode).emit('voteUpdate', { 
+        voteCount: currentRound.submissions.reduce((count, s) => count + s.votes.length, 0),
+        totalPlayers: gameRoom.players.length - currentRound.submissions.length // Don't count players voting for themselves
+      });
+      
+      // Check if all players have voted
+      const totalVotes = currentRound.submissions.reduce((count, s) => count + s.votes.length, 0);
+      if (totalVotes >= gameRoom.players.length - currentRound.submissions.length) {
+        // Skip to results phase immediately
+        transitionToNextPhase(roomCode);
+      }
+    } catch (error) {
+      console.error('Error submitting vote:', error);
+      socket.emit('gameError', { message: 'Failed to submit vote' });
+    }
+  });
+  
+  // Handle disconnection
+  socket.on('disconnect', async () => {
+    console.log('Client disconnected:', socket.id);
+    
+    // Get room from socket
+    const roomCode = socketToRoom[socket.id];
+    
+    if (roomCode) {
+      delete socketToRoom[socket.id];
+      
+      // If game hasn't started, we could remove the player from the room
+      // For now, we'll leave them in case they reconnect
+    }
+  });
+});
 // =========================
 // Server Start
 // =========================
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
+server.listen(PORT, () => {
   console.log(`Backend server running on port ${PORT}`);
 });
