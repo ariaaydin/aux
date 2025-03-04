@@ -97,9 +97,9 @@ export default function GameScreen() {
       return;
     }
     
-    // Navigate to the game room with user info and room code
+    // Navigate to the waiting room with user info and room code
     router.push({
-        pathname: '/game/play/[roomCode]',
+        pathname: '/game/waiting/[roomCode]',
         params: { roomCode: roomCode.toUpperCase(), spotifyId, username }
       });
   };
@@ -115,8 +115,8 @@ export default function GameScreen() {
           colors={['#1A2151', '#323B71']}
           style={styles.backgroundGradient}
         >
-          <Text style={styles.title}>Music Battle</Text>
-          <Text style={styles.subtitle}>Play with friends</Text>
+          <Text style={styles.title}>Song Wars</Text>
+          <Text style={styles.subtitle}>Battle with your best tracks</Text>
           
           {loading ? (
             <ActivityIndicator size="large" color="#00FFFF" style={styles.loader} />
@@ -183,7 +183,7 @@ export default function GameScreen() {
             <Text style={styles.instructionsTitle}>How to Play:</Text>
             <View style={styles.instructionItem}>
               <Ionicons name="musical-notes" size={20} color="#00FFFF" />
-              <Text style={styles.instructionText}>Each player gets a set of random songs</Text>
+              <Text style={styles.instructionText}>Choose your 5 battle songs</Text>
             </View>
             <View style={styles.instructionItem}>
               <Ionicons name="trophy" size={20} color="#00FFFF" />

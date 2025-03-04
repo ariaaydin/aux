@@ -8,7 +8,8 @@ import {
   Image,
   ActivityIndicator,
   Alert,
-  Animated
+  Animated,
+  Dimensions
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { WebView } from 'react-native-webview';
@@ -60,10 +61,13 @@ export default function GamePlayScreen() {
   const [token, setToken] = useState<string | null>(null);
   const [socket, setSocket] = useState<any>(null);
   const [isGameCompleted, setIsGameCompleted] = useState<boolean>(false);
-  
+  const [voteSubmitted, setVoteSubmitted] = useState<boolean>(false);
+  const [submissionComplete, setSubmissionComplete] = useState<boolean>(false);
+
   // Animation values
   const fadeAnim = useRef(new Animated.Value(0)).current;
   const scaleAnim = useRef(new Animated.Value(0.95)).current;
+  const slideAnim = useRef(new Animated.Value(Dimensions.get('window').width)).current;
   
   const router = useRouter();
 
@@ -116,6 +120,11 @@ export default function GamePlayScreen() {
       if (data.isLastRound && data.currentPhase === PHASES.RESULTS) {
         setIsGameCompleted(true);
       }
+
+      // Reset vote submitted state when phase changes
+      if (data.currentPhase !== PHASES.VOTING) {
+        setVoteSubmitted(false);
+      }
     });
   
     newSocket.on('songSubmitted', ({ success }) => {
@@ -123,7 +132,10 @@ export default function GamePlayScreen() {
     });
   
     newSocket.on('voteSubmitted', ({ success }) => {
-      if (success) console.log('Vote successfully submitted');
+      if (success) {
+        console.log('Vote successfully submitted');
+        setVoteSubmitted(true);
+      }
     });
   
     newSocket.on('playbackUpdate', ({ index }) => {
@@ -169,12 +181,28 @@ export default function GamePlayScreen() {
     return () => clearInterval(interval);
   }, [currentPhase, currentPlayingIndex]);
 
+  // Run animation when phase changes
+  useEffect(() => {
+    // Reset slide animation
+    slideAnim.setValue(Dimensions.get('window').width);
+    
+    // Run slide in animation
+    Animated.timing(slideAnim, {
+      toValue: 0,
+      duration: 400,
+      useNativeDriver: true
+    }).start();
+  }, [currentPhase]);
+
   const handleSubmitSong = () => {
     if (!selectedSongForSubmission) {
       Alert.alert('Select a song', 'Please select a song to submit');
       return;
     }
     socket.emit('submitSong', { roomCode, spotifyId, trackId: selectedSongForSubmission });
+    
+    // Set submission as complete to update UI state
+    setSubmissionComplete(true);
   };
 
   const handleSubmitVote = () => {
@@ -208,10 +236,22 @@ export default function GamePlayScreen() {
 
   const renderCategoryPhase = () => (
     <Animated.View 
-      style={[styles.categoryContainer, { opacity: fadeAnim, transform: [{ scale: scaleAnim }] }]}
+      style={[
+        styles.categoryContainer, 
+        { 
+          opacity: fadeAnim, 
+          transform: [
+            { scale: scaleAnim },
+            { translateX: slideAnim }
+          ] 
+        }
+      ]}
     >
-      <Text style={styles.categoryLabel}>Category:</Text>
+      <Text style={styles.categoryLabel}>This Round's Category:</Text>
       <Text style={styles.categoryText}>{category}</Text>
+      <View style={styles.categoryIconContainer}>
+        <Ionicons name="musical-notes" size={64} color="#00FFFF" />
+      </View>
       <Text style={styles.categoryInstructions}>
         Get ready to pick your best song that matches this category!
       </Text>
@@ -219,81 +259,109 @@ export default function GamePlayScreen() {
   );
 
   const renderSubmissionPhase = () => {
-  console.log('Rendering submission phase with mySongs:', mySongs);
-  return (
-    <View style={styles.submissionContainer}>
-      <Text style={styles.submissionTitle}>Pick Your Song</Text>
-      <Text style={styles.submissionSubtitle}>
-        Which of your songs best fits: "{category}"?
-      </Text>
-      <View style={styles.timerContainer}>
-        <Ionicons name="timer-outline" size={24} color="#FFAA00" />
-        <Text style={styles.timerText}>{timeLeft}s</Text>
-      </View>
-      {mySongs.length === 0 ? (
-        <Text style={styles.noSongsText}>
-          No songs available. Please ensure you selected songs in the lobby.
-        </Text>
-      ) : (
-        <FlatList
-          data={mySongs}
-          keyExtractor={(item) => item.trackId || `${Math.random()}`} // Fallback key
-          renderItem={({ item }) => (
-            <TouchableOpacity
-              style={[
-                styles.songItem,
-                selectedSongForSubmission === item.trackId && styles.selectedSongItem
-              ]}
-              onPress={() => {
-                console.log('Selected song:', item);
-                setSelectedSongForSubmission(item.trackId);
-              }}
-            >
-              <Image
-                source={{ uri: item.trackImage || 'https://via.placeholder.com/60' }}
-                style={styles.songImage}
-              />
-              <View style={styles.songDetails}>
-                <Text style={styles.songName} numberOfLines={1}>
-                  {item.trackName || 'Unknown Track'}
-                </Text>
-                <Text style={styles.songArtist} numberOfLines={1}>
-                  {item.trackArtist || 'Unknown Artist'}
-                </Text>
-              </View>
-              <View style={styles.selectionIndicator}>
-                {selectedSongForSubmission === item.trackId ? (
-                  <Ionicons name="checkmark-circle" size={24} color="#00FFFF" />
-                ) : (
-                  <Ionicons name="ellipse-outline" size={24} color="#FFFFFF" />
-                )}
-              </View>
-            </TouchableOpacity>
-          )}
-          contentContainerStyle={styles.songsList}
-        />
-      )}
-      <TouchableOpacity
-        style={styles.submitButton}
-        onPress={handleSubmitSong}
-        disabled={!selectedSongForSubmission}
+    console.log('Rendering submission phase with mySongs:', mySongs);
+    return (
+      <Animated.View 
+        style={[
+          styles.submissionContainer,
+          { transform: [{ translateX: slideAnim }] }
+        ]}
       >
-        <LinearGradient
-          colors={selectedSongForSubmission ? ['#00FFAA', '#00AAFF'] : ['#666666', '#444444']}
-          style={styles.buttonGradient}
-        >
-          <Text style={styles.buttonText}>Submit</Text>
-          <Ionicons name="arrow-forward" size={20} color="#FFFFFF" />
-        </LinearGradient>
-      </TouchableOpacity>
-    </View>
-  );
-};
-
-const renderPlaybackPhase = () => {
+        {/* Clean header with round and timer */}
+        <View style={styles.submissionHeader}>
+          <View style={styles.roundIndicator}>
+            <Text style={styles.roundIndicatorText}>Round {round}</Text>
+          </View>
+          <View style={styles.timerContainer}>
+            <Ionicons name="timer-outline" size={20} color="#FFAA00" />
+            <Text style={styles.timerText}>{timeLeft}s</Text>
+          </View>
+        </View>
+        
+        {/* Category as the main header */}
+        <Text style={styles.categoryText}>"{category}"</Text>
+        
+        {mySongs.length === 0 ? (
+          <Text style={styles.noSongsText}>
+            No songs available. Please ensure you selected songs in the lobby.
+          </Text>
+        ) : (
+          <>
+            
+            <FlatList
+              data={mySongs}
+              keyExtractor={(item) => item.trackId || `${Math.random()}`} // Fallback key
+              renderItem={({ item }) => (
+                <TouchableOpacity
+                  style={[
+                    styles.songItem,
+                    selectedSongForSubmission === item.trackId && styles.selectedSongItem
+                  ]}
+                  onPress={() => {
+                    console.log('Selected song:', item);
+                    setSelectedSongForSubmission(item.trackId);
+                  }}
+                >
+                  <Image
+                    source={{ uri: item.trackImage || 'https://via.placeholder.com/60' }}
+                    style={styles.songImage}
+                  />
+                  <View style={styles.songDetails}>
+                    <Text style={styles.songName} numberOfLines={1}>
+                      {item.trackName || 'Unknown Track'}
+                    </Text>
+                    <Text style={styles.songArtist} numberOfLines={1}>
+                      {item.trackArtist || 'Unknown Artist'}
+                    </Text>
+                  </View>
+                  <View style={styles.selectionIndicator}>
+                    {selectedSongForSubmission === item.trackId ? (
+                      <Ionicons name="checkmark-circle" size={24} color="#00FFFF" />
+                    ) : (
+                      <Ionicons name="ellipse-outline" size={24} color="#FFFFFF" />
+                    )}
+                  </View>
+                </TouchableOpacity>
+              )}
+              contentContainerStyle={styles.songsList}
+            />
+            
+<TouchableOpacity
+  style={styles.submitButton}
+  onPress={handleSubmitSong}
+  disabled={!selectedSongForSubmission || submissionComplete}
+>
+  <LinearGradient
+    colors={
+      submissionComplete 
+        ? ['#666666', '#444444'] 
+        : (selectedSongForSubmission ? ['#00FFAA', '#00AAFF'] : ['#666666', '#444444'])
+    }
+    style={styles.buttonGradient}
+  >
+    <Text style={styles.buttonText}>
+      {submissionComplete ? 'Submitted' : 'Submit'}
+    </Text>
+    {submissionComplete 
+      ? <Ionicons name="checkmark" size={20} color="#FFFFFF" /> 
+      : <Ionicons name="arrow-forward" size={20} color="#FFFFFF" />
+    }
+  </LinearGradient>
+</TouchableOpacity>
+          </>
+        )}
+      </Animated.View>
+    );
+  };
+  const renderPlaybackPhase = () => {
     console.log('Rendering playback phase:', { currentPlayingIndex, submissions });
     return (
-      <View style={styles.playbackContainer}>
+      <Animated.View 
+        style={[
+          styles.playbackContainer,
+          { transform: [{ translateX: slideAnim }] }
+        ]}
+      >
         <Text style={styles.playbackTitle}>Listening Time</Text>
         <Text style={styles.playbackSubtitle}>
           Listen to each song submission for "{category}"
@@ -403,130 +471,118 @@ const renderPlaybackPhase = () => {
           </View>
         )}
         
-        <Text style={styles.playersListTitle}>All Submissions</Text>
-        <FlatList
-          data={submissions}
-          keyExtractor={(item, index) => `${item.playerId}-${index}`}
-          renderItem={({ item, index }) => {
-            const progress = songProgress[index] || 0;
-            const isPlaying = index === currentPlayingIndex;
-            const player: Player | undefined = gameState?.players.find((p: Player) => p.spotifyId === item.playerId);
-            const song = player?.selectedSongs.find((s) => s.trackId === item.trackId);
-            
-            return (
-              <View 
-                style={[
-                  styles.songPlaybackItem,
-                  isPlaying && styles.currentPlaybackItem
-                ]}
-              >
-                <View style={styles.songPlaybackInfo}>
-                  <Text style={styles.songPlaybackNumber}>{index + 1}.</Text>
-                  <View style={styles.songPlaybackDetails}>
-                    <Text style={styles.songPlaybackName}>
-                      {song?.trackName || 'Unknown Song'}
-                    </Text>
-                    <Text style={styles.songPlaybackArtist}>
-                      by {song?.trackArtist || 'Unknown Artist'}
-                    </Text>
-                  </View>
-                  {isPlaying && (
-                    <View style={styles.playingIndicator}>
-                      <Ionicons name="musical-notes" size={18} color="#00FFFF" />
-                      <Text style={styles.nowPlayingIndicatorText}>Now Playing</Text>
-                    </View>
-                  )}
-                </View>
-                
-                {isPlaying && (
-                  <View style={styles.miniProgressBar}>
-                    <View
-                      style={[
-                        styles.miniProgressFill,
-                        { width: `${(progress / 30) * 100}%` }
-                      ]}
-                    />
-                  </View>
-                )}
-              </View>
-            );
-          }}
-          contentContainerStyle={styles.submissionsList}
-        />
-        
         <Text style={styles.playbackInstructions}>
           Get ready to vote for your favorite song in this category!
         </Text>
-      </View>
+      </Animated.View>
     );
   };
+
+  
+
   const renderVotingPhase = () => (
-    <View style={styles.votingContainer}>
-      <Text style={styles.votingTitle}>Vote Time</Text>
-      <Text style={styles.votingSubtitle}>
-        Which song best fits: "{category}"?
-      </Text>
-      <View style={styles.timerContainer}>
-        <Ionicons name="timer-outline" size={24} color="#FFAA00" />
-        <Text style={styles.timerText}>{timeLeft}s</Text>
+    <Animated.View 
+      style={[
+        styles.votingContainer,
+        { transform: [{ translateX: slideAnim }] }
+      ]}
+    >
+      <View style={styles.votingHeader}>
+        <View style={styles.roundIndicator}>
+          <Text style={styles.roundIndicatorText}>Round {round}</Text>
+        </View>
+        <View style={styles.timerContainer}>
+          <Ionicons name="timer-outline" size={20} color="#FFAA00" />
+          <Text style={styles.timerText}>{timeLeft}s</Text>
+        </View>
       </View>
-      <FlatList
-        data={submissions}
-        keyExtractor={(item, index) => `${item.playerId}-${index}`}
-        renderItem={({ item, index }) => {
-          const isOwnSubmission = item.playerId === spotifyId;
-          const player = gameState?.players.find((p: any) => p.spotifyId === item.playerId);
-          const song = player?.selectedSongs.find((s: any) => s.trackId === item.trackId);
-          return (
-            <TouchableOpacity
-              style={[
-                styles.submissionItem,
-                selectedVote === item.playerId && styles.selectedVoteItem,
-                isOwnSubmission && styles.ownSubmissionItem
-              ]}
-              onPress={() => !isOwnSubmission && setSelectedVote(item.playerId)}
-              disabled={isOwnSubmission}
-            >
-              <View style={styles.submissionInfo}>
-                <Text style={styles.submissionNumber}>
-                  {song?.trackName || `Song ${index + 1}`}
-                </Text>
-                {isOwnSubmission && (
-                  <View style={styles.ownSubmissionBadge}>
-                    <Text style={styles.ownSubmissionText}>Your Song</Text>
+      
+      <Text style={styles.categoryText}>"{category}"</Text>
+      
+      {voteSubmitted ? (
+        <View style={styles.voteSubmittedContainer}>
+          <Ionicons name="checkmark-circle" size={80} color="#00FF00" />
+          <Text style={styles.voteSubmittedText}>Vote Submitted!</Text>
+          <Text style={styles.waitingForOthersText}>
+            Waiting for other players to vote...
+          </Text>
+        </View>
+      ) : (
+        <>
+          <FlatList
+            data={submissions}
+            keyExtractor={(item, index) => `${item.playerId}-${index}`}
+            renderItem={({ item, index }) => {
+              const isOwnSubmission = item.playerId === spotifyId;
+              const player = gameState?.players.find((p: any) => p.spotifyId === item.playerId);
+              const song = player?.selectedSongs.find((s: any) => s.trackId === item.trackId);
+              return (
+                <TouchableOpacity
+                  style={[
+                    styles.votingItem,
+                    selectedVote === item.playerId && styles.selectedVoteItem,
+                    isOwnSubmission && styles.ownSubmissionItem
+                  ]}
+                  onPress={() => !isOwnSubmission && setSelectedVote(item.playerId)}
+                  disabled={isOwnSubmission}
+                >
+                  <View style={styles.votingItemContent}>
+                    <View style={styles.votingItemNumber}>
+                      <Text style={styles.votingItemNumberText}>{index + 1}</Text>
+                    </View>
+                    <View style={styles.votingItemInfo}>
+                      <Text style={styles.votingItemSong}>
+                        {song?.trackName || `Song ${index + 1}`}
+                      </Text>
+                      <Text style={styles.votingItemArtist}>
+                        by {song?.trackArtist || 'Unknown Artist'}
+                      </Text>
+                      {isOwnSubmission && (
+                        <View style={styles.ownSubmissionBadge}>
+                          <Text style={styles.ownSubmissionText}>Your Song</Text>
+                        </View>
+                      )}
+                    </View>
                   </View>
-                )}
-              </View>
-              <View style={styles.selectionIndicator}>
-                {selectedVote === item.playerId ? (
-                  <Ionicons name="checkmark-circle" size={24} color="#00FFFF" />
-                ) : (
-                  <Ionicons name="ellipse-outline" size={24} color="#FFFFFF" />
-                )}
-              </View>
-            </TouchableOpacity>
-          );
-        }}
-        contentContainerStyle={styles.submissionsList}
-      />
-      <TouchableOpacity
-        style={styles.voteButton}
-        onPress={handleSubmitVote}
-        disabled={!selectedVote}
-      >
-        <LinearGradient
-          colors={selectedVote ? ['#00FFAA', '#00AAFF'] : ['#666666', '#444444']}
-          style={styles.buttonGradient}
-        >
-          <Text style={styles.buttonText}>Vote</Text>
-          <Ionicons name="arrow-forward" size={20} color="#FFFFFF" />
-        </LinearGradient>
-      </TouchableOpacity>
-    </View>
+                  {!isOwnSubmission && (
+                    <View style={styles.selectionIndicator}>
+                      {selectedVote === item.playerId ? (
+                        <Ionicons name="checkmark-circle" size={28} color="#00FFFF" />
+                      ) : (
+                        <Ionicons name="ellipse-outline" size={28} color="#FFFFFF" />
+                      )}
+                    </View>
+                  )}
+                </TouchableOpacity>
+              );
+            }}
+            contentContainerStyle={styles.votingList}
+          />
+          <TouchableOpacity
+            style={styles.voteButton}
+            onPress={handleSubmitVote}
+            disabled={!selectedVote}
+          >
+            <LinearGradient
+              colors={selectedVote ? ['#00FFAA', '#00AAFF'] : ['#666666', '#444444']}
+              style={styles.buttonGradient}
+            >
+              <Text style={styles.buttonText}>Vote</Text>
+              <Ionicons name="arrow-forward" size={20} color="#FFFFFF" />
+            </LinearGradient>
+          </TouchableOpacity>
+        </>
+      )}
+    </Animated.View>
   );
 
   const renderResultsPhase = () => (
-    <View style={styles.resultsContainer}>
+    <Animated.View 
+      style={[
+        styles.resultsContainer,
+        { transform: [{ translateX: slideAnim }] }
+      ]}
+    >
       {isGameCompleted ? (
         <View style={styles.finalResultsContainer}>
           <Text style={styles.finalResultsTitle}>Game Over!</Text>
@@ -540,7 +596,10 @@ const renderPlaybackPhase = () => {
                 index === 0 && styles.winnerItem,
                 item.spotifyId === spotifyId && styles.currentPlayerItem
               ]}>
-                <View style={styles.rankContainer}>
+                <View style={[
+                  styles.rankContainer,
+                  index === 0 ? styles.goldRank : (index === 1 ? styles.silverRank : (index === 2 ? styles.bronzeRank : {}))
+                ]}>
                   <Text style={styles.rankText}>{index + 1}</Text>
                 </View>
                 <View style={styles.playerResultInfo}>
@@ -594,7 +653,7 @@ const renderPlaybackPhase = () => {
                     </View>
                     <View style={styles.songResultInfo}>
                       <Text style={styles.songResultName}>
-                        {song?.trackName || 'Unknown'} by {player?.username || 'Unknown'}
+                        {song?.trackName || 'Unknown'} - {player?.username || 'Unknown'}
                         {isOwnSubmission && " (You)"}
                       </Text>
                       <Text style={styles.songResultPoints}>
@@ -618,7 +677,10 @@ const renderPlaybackPhase = () => {
               keyExtractor={(item) => item.spotifyId}
               renderItem={({ item, index }) => (
                 <View style={styles.leaderboardPreviewItem}>
-                  <Text style={styles.leaderboardPreviewRank}>{index + 1}.</Text>
+                  <Text style={[
+                    styles.leaderboardPreviewRank,
+                    index === 0 ? styles.goldText : (index === 1 ? styles.silverText : styles.bronzeText)
+                  ]}>{index + 1}.</Text>
                   <Text style={styles.leaderboardPreviewName}>
                     {item.username}
                     {item.spotifyId === spotifyId && " (You)"}
@@ -633,68 +695,31 @@ const renderPlaybackPhase = () => {
           </Text>
         </View>
       )}
-    </View>
+    </Animated.View>
   );
-
-  return (
-    <LinearGradient colors={['#1A2151', '#323B71']} style={styles.container}>
-      <View style={styles.header}>
-        <View style={styles.roundInfo}>
-          <Text style={styles.roundText}>Round {round}/{totalRounds}</Text>
-        </View>
-        <View style={styles.phaseContainer}>
-          <Text style={styles.phaseText}>{currentPhase.toUpperCase()}</Text>
-          {timeLeft > 0 && currentPhase !== PHASES.PLAYBACK && (
-            <Text style={styles.phaseTimerText}>{timeLeft}s</Text>
-          )}
-        </View>
-      </View>
-      <View style={styles.mainContent}>
-        {renderPhaseContent()}
-      </View>
-    </LinearGradient>
-  );
-}
 
 const styles = StyleSheet.create({
   container: {
     flex: 1,
   },
-  currentSongContainer: {
-    marginBottom: 24,
-  },
-  spotifyPlayerContainer: {
-    width: '100%',
-    height: 80,
-    marginBottom: 24,
-  },
-  noTokenText: {
-    fontSize: 16,
-    color: '#FF5555',
-    textAlign: 'center',
-  },
-  noSongsText: {
-    fontSize: 16,
-    color: '#FFFFFF',
-    textAlign: 'center',
-    marginTop: 20,
-  },
-  webView: {
-    width: '100%',
-    height: '100%',
-  },
   header: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
     paddingHorizontal: 20,
     paddingTop: 60,
     paddingBottom: 16,
+    alignItems: 'center',
+  },
+  headerTitle: {
+    fontSize: 24,
+    fontWeight: '700',
+    color: '#FFFFFF',
+    marginBottom: 12,
   },
   roundInfo: {
     backgroundColor: 'rgba(0, 0, 0, 0.2)',
     borderRadius: 12,
     paddingHorizontal: 12,
     paddingVertical: 6,
+    marginBottom: 8,
   },
   roundText: {
     fontSize: 16,
@@ -736,6 +761,7 @@ const styles = StyleSheet.create({
     fontSize: 24,
     color: '#FFFFFF',
     marginBottom: 16,
+    textAlign: 'center',
   },
   categoryText: {
     fontSize: 36,
@@ -744,11 +770,15 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     marginBottom: 24,
   },
+  categoryIconContainer: {
+    marginVertical: 30,
+  },
   categoryInstructions: {
     fontSize: 18,
     color: '#FFFFFF',
     textAlign: 'center',
     opacity: 0.8,
+    marginTop: 20,
   },
   
   // Submission phase styles
@@ -767,6 +797,8 @@ const styles = StyleSheet.create({
     color: '#CCDDFF',
     marginBottom: 16,
   },
+
+  // Continuation of the styles object
   timerContainer: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -799,6 +831,10 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#00FFFF',
   },
+  disabledSongItem: {
+    opacity: 0.5,
+  },
+  
   songImage: {
     width: 50,
     height: 50,
@@ -844,7 +880,6 @@ const styles = StyleSheet.create({
   playbackContainer: {
     flex: 1,
     paddingVertical: 20,
-    alignItems: 'center',
   },
   playbackTitle: {
     fontSize: 24,
@@ -856,27 +891,57 @@ const styles = StyleSheet.create({
     fontSize: 16,
     color: '#CCDDFF',
     marginBottom: 24,
-    textAlign: 'center',
   },
-  songPlaybackItem: {
-    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+  playerContainer: {
+    backgroundColor: 'rgba(0, 0, 0, 0.3)',
     borderRadius: 12,
-    padding: 12,
-    marginBottom: 10,
+    padding: 16,
+    marginBottom: 20,
     width: '100%',
   },
-  songPlaybackInfo: {
-    marginBottom: 8,
+  nowPlayingHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 12,
   },
-  songPlaybackName: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#FFFFFF',
+  nowPlayingIcon: {
+    marginRight: 8,
   },
   nowPlayingText: {
-    fontSize: 14,
+    fontSize: 16,
+    fontWeight: '600',
     color: '#00FFFF',
-    marginTop: 4,
+  },
+  spotifyPlayerContainer: {
+    width: '100%',
+    height: 80,
+    marginBottom: 12,
+  },
+  webView: {
+    width: '100%',
+    height: '100%',
+    borderRadius: 8,
+    overflow: 'hidden',
+  },
+  songDetailsContainer: {
+    marginTop: 12,
+    alignItems: 'center',
+  },
+  songTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#FFFFFF',
+    textAlign: 'center',
+  },
+
+  progressBarContainer: {
+    marginTop: 12,
+  },
+  timeRemaining: {
+    fontSize: 14,
+    color: '#FFFFFF',
+    textAlign: 'right',
+    marginBottom: 4,
   },
   progressBar: {
     height: 8,
@@ -887,15 +952,29 @@ const styles = StyleSheet.create({
   progressFill: {
     height: '100%',
   },
-  submissionsList: {
-    paddingBottom: 16,
-  },
   playbackInstructions: {
-    fontSize: 18,
+    fontSize: 16,
     color: '#FFFFFF',
     textAlign: 'center',
     opacity: 0.8,
-    marginTop: 40,
+    marginTop: 20,
+  },
+  errorContainer: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 20,
+  },
+  noTokenText: {
+    fontSize: 16,
+    color: '#FF5555',
+    textAlign: 'center',
+    marginTop: 8,
+  },
+  noSongsText: {
+    fontSize: 16,
+    color: '#FFFFFF',
+    textAlign: 'center',
+    marginTop: 20,
   },
   
   // Voting phase styles
@@ -914,14 +993,50 @@ const styles = StyleSheet.create({
     color: '#CCDDFF',
     marginBottom: 16,
   },
-  submissionItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
+  votingList: {
+    paddingBottom: 16,
+  },
+  votingItem: {
     backgroundColor: 'rgba(255, 255, 255, 0.05)',
     borderRadius: 12,
     padding: 16,
     marginBottom: 10,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  votingItemContent: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  votingItemNumber: {
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 12,
+  },
+  votingItemNumberText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#FFFFFF',
+  },
+  votingItemInfo: {
+    flex: 1,
+  },
+  votingItemSong: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#FFFFFF',
+  },
+  votingItemArtist: {
+    fontSize: 14,
+    color: '#CCDDFF',
+    opacity: 0.8,
+    marginTop: 2,
   },
   selectedVoteItem: {
     backgroundColor: 'rgba(0, 255, 255, 0.1)',
@@ -932,21 +1047,13 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(255, 255, 255, 0.02)',
     opacity: 0.7,
   },
-  submissionInfo: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  submissionNumber: {
-    fontSize: 18,
-    fontWeight: '600',
-    color: '#FFFFFF',
-  },
   ownSubmissionBadge: {
     backgroundColor: 'rgba(255, 85, 153, 0.2)',
     borderRadius: 8,
     paddingHorizontal: 8,
     paddingVertical: 4,
-    marginLeft: 12,
+    alignSelf: 'flex-start',
+    marginTop: 6,
   },
   ownSubmissionText: {
     fontSize: 12,
@@ -956,6 +1063,25 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     overflow: 'hidden',
     marginTop: 10,
+  },
+  voteSubmittedContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 20,
+  },
+  voteSubmittedText: {
+    fontSize: 24,
+    fontWeight: '700',
+    color: '#00FF00',
+    marginTop: 16,
+    marginBottom: 8,
+  },
+  waitingForOthersText: {
+    fontSize: 18,
+    color: '#FFFFFF',
+    textAlign: 'center',
+    opacity: 0.8,
   },
   
   // Results phase styles
@@ -1042,6 +1168,27 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     marginRight: 6,
   },
+
+  votingHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 16,
+  },
+  roundIndicator: {
+    backgroundColor: 'rgba(0, 0, 0, 0.2)',
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+  },
+  roundIndicatorText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#FFFFFF',
+  },
+ 
+  
+  // Leaderboard preview styles
   leaderboardPreviewContainer: {
     backgroundColor: 'rgba(0, 0, 0, 0.2)',
     borderRadius: 12,
@@ -1066,6 +1213,15 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '600',
     color: '#FFFFFF',
+  },
+  goldText: {
+    color: '#FFD700',
+  },
+  silverText: {
+    color: '#C0C0C0',
+  },
+  bronzeText: {
+    color: '#CD7F32',
   },
   leaderboardPreviewName: {
     flex: 1,
@@ -1130,6 +1286,21 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginRight: 12,
   },
+  goldRank: {
+    backgroundColor: 'rgba(255, 215, 0, 0.2)',
+    borderWidth: 1,
+    borderColor: '#FFD700',
+  },
+  silverRank: {
+    backgroundColor: 'rgba(192, 192, 192, 0.2)',
+    borderWidth: 1,
+    borderColor: '#C0C0C0',
+  },
+  bronzeRank: {
+    backgroundColor: 'rgba(205, 127, 50, 0.2)',
+    borderWidth: 1,
+    borderColor: '#CD7F32',
+  },
   playerResultInfo: {
     flex: 1,
   },
@@ -1154,98 +1325,44 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
     marginTop: 20,
   },
-  playerContainer: {
-    backgroundColor: 'rgba(0, 0, 0, 0.3)',
-    borderRadius: 12,
-    padding: 16,
-    marginBottom: 20,
-    width: '100%',
-  },
-  nowPlayingHeader: {
+  submissionHeader: {
     flexDirection: 'row',
+    justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 12,
+    marginBottom: 16,
   },
-  nowPlayingIcon: {
-    marginRight: 8,
-  },
-  debugText: {
-    color: '#CCDDFF',
-    fontSize: 12,
-    marginBottom: 8,
-  },
-  errorContainer: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    padding: 20,
-  },
-  songDetailsContainer: {
-    marginTop: 12,
-    alignItems: 'center',
-  },
-  songTitle: {
-    fontSize: 18,
-    fontWeight: '700',
-    color: '#FFFFFF',
-    textAlign: 'center',
-  },
- 
-  progressBarContainer: {
-    marginTop: 12,
-  },
-  timeRemaining: {
-    fontSize: 14,
-    color: '#FFFFFF',
-    textAlign: 'right',
-    marginBottom: 4,
-  },
-  playersListTitle: {
-    fontSize: 18,
-    fontWeight: '700',
-    color: '#FFFFFF',
-    marginBottom: 12,
-  },
-  songPlaybackDetails: {
-    flex: 1,
-  },
-  songPlaybackNumber: {
+  submissionInstructions: {
     fontSize: 16,
-    fontWeight: '700',
     color: '#FFFFFF',
-    marginRight: 8,
-  },
-  songPlaybackArtist: {
-    fontSize: 12,
-    color: '#CCDDFF',
-  },
-  currentPlaybackItem: {
-    backgroundColor: 'rgba(0, 255, 255, 0.1)',
-    borderLeftWidth: 3,
-    borderLeftColor: '#00FFFF',
-  },
-  playingIndicator: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: 'rgba(0, 255, 255, 0.1)',
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 12,
-  },
-  nowPlayingIndicatorText: {
-    fontSize: 12,
-    color: '#00FFFF',
-    marginLeft: 4,
-  },
-  miniProgressBar: {
-    height: 4,
-    backgroundColor: 'rgba(255, 255, 255, 0.1)',
-    borderRadius: 2,
-    overflow: 'hidden',
-    marginTop: 8,
-  },
-  miniProgressFill: {
-    height: '100%',
-    backgroundColor: '#00FFFF',
-  },
-
+    opacity: 0.8,
+    marginBottom: 16,
+    textAlign: 'center',
+  }
 });
+
+return (
+  <LinearGradient colors={['#1A2151', '#323B71']} style={styles.container}>
+    {/* Header only shown for category and results phases */}
+    {currentPhase !== PHASES.SUBMISSION && 
+     currentPhase !== PHASES.VOTING && 
+     currentPhase !== PHASES.PLAYBACK && (
+      <View style={styles.header}>
+        <Text style={styles.headerTitle}>Song Wars</Text>
+        <View style={styles.roundInfo}>
+          <Text style={styles.roundText}>Round {round}/{totalRounds}</Text>
+        </View>
+        <View style={styles.phaseContainer}>
+          <Text style={styles.phaseText}>{currentPhase.toUpperCase()}</Text>
+          {timeLeft > 0 && currentPhase !== PHASES.PLAYBACK && (
+            <Text style={styles.phaseTimerText}>{timeLeft}s</Text>
+          )}
+        </View>
+      </View>
+    )}
+    <View style={styles.mainContent}>
+      {renderPhaseContent()}
+    </View>
+  </LinearGradient>
+);
+
+}

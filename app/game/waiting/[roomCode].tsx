@@ -1,12 +1,13 @@
 // app/game/waiting/[roomCode].tsx
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   View,
   Text,
   StyleSheet,
   FlatList,
   ActivityIndicator,
-  Alert
+  Alert,
+  Animated
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter, useLocalSearchParams } from 'expo-router';
@@ -14,11 +15,36 @@ import { Ionicons } from '@expo/vector-icons';
 import io from 'socket.io-client';
 
 export default function WaitingScreen() {
-  const { roomCode, spotifyId, username } = useLocalSearchParams();
+  const { roomCode, spotifyId, username, testMode, botCount } = useLocalSearchParams();
   const [players, setPlayers] = useState<any[]>([]);
   const [socket, setSocket] = useState<any>(null);
+  const [countdownStarted, setCountdownStarted] = useState(false);
+  const [countdown, setCountdown] = useState(15);
+  
+  // Animation values
+  const pulseAnim = useRef(new Animated.Value(1)).current;
   
   const router = useRouter();
+
+  // Pulse animation for countdown
+  useEffect(() => {
+    if (countdownStarted) {
+      Animated.loop(
+        Animated.sequence([
+          Animated.timing(pulseAnim, {
+            toValue: 1.2,
+            duration: 500,
+            useNativeDriver: true
+          }),
+          Animated.timing(pulseAnim, {
+            toValue: 1,
+            duration: 500,
+            useNativeDriver: true
+          })
+        ])
+      ).start();
+    }
+  }, [countdownStarted]);
 
   // Connect to socket server
   useEffect(() => {
@@ -35,6 +61,16 @@ export default function WaitingScreen() {
         spotifyId: spotifyId as string, 
         username: username as string 
       });
+
+      // If in test mode, enable it
+      if (testMode === 'true') {
+        console.log('Enabling test mode');
+        newSocket.emit('enableTestMode', {
+          roomCode: roomCode as string,
+          spotifyId: spotifyId as string,
+          botCount: parseInt(botCount as string, 10) || 3
+        });
+      }
     });
     
     // Handle player joined event
@@ -49,11 +85,18 @@ export default function WaitingScreen() {
       setPlayers(gameState.players || []);
     });
     
+    // Handle game countdown event
+    newSocket.on('gameCountdown', ({ timeLeft }) => {
+      console.log('Game countdown:', timeLeft);
+      setCountdownStarted(true);
+      setCountdown(timeLeft);
+    });
+    
     // Handle game started event
     newSocket.on('gameStarted', ({ gameState }) => {
       console.log('Game started!');
       router.replace({
-        pathname: '/game/play/[roomCode]',
+        pathname: '/game/select/[roomCode]',
         params: {
           roomCode: roomCode as string,
           spotifyId: spotifyId as string,
@@ -73,6 +116,17 @@ export default function WaitingScreen() {
       newSocket.disconnect();
     };
   }, []);
+
+  // Countdown timer
+  useEffect(() => {
+    if (countdownStarted && countdown > 0) {
+      const timer = setTimeout(() => {
+        setCountdown(countdown - 1);
+      }, 1000);
+      
+      return () => clearTimeout(timer);
+    }
+  }, [countdown, countdownStarted]);
 
   // Render player item
   const renderPlayerItem = ({ item }: { item: { username: string; isHost: boolean; isReady: boolean; spotifyId: string } }) => (
@@ -96,7 +150,7 @@ export default function WaitingScreen() {
         ) : (
           <View style={styles.notReadyStatus}>
             <Ionicons name="time-outline" size={24} color="#FFAA00" />
-            <Text style={styles.notReadyText}>Selecting...</Text>
+            <Text style={styles.notReadyText}>Waiting...</Text>
           </View>
         )}
       </View>
@@ -110,10 +164,22 @@ export default function WaitingScreen() {
   return (
     <LinearGradient colors={['#1A2151', '#323B71']} style={styles.container}>
       <View style={styles.header}>
-        <Text style={styles.headerTitle}>Waiting for Players</Text>
-        <Text style={styles.headerSubtitle}>
-          {readyCount} of {totalCount} players ready
-        </Text>
+        <Text style={styles.headerTitle}>Song Wars</Text>
+        {countdownStarted ? (
+          <Animated.View 
+            style={[
+              styles.countdownContainer,
+              { transform: [{ scale: pulseAnim }] }
+            ]}
+          >
+            <Text style={styles.countdownText}>Game starts in</Text>
+            <Text style={styles.countdownNumber}>{countdown}</Text>
+          </Animated.View>
+        ) : (
+          <Text style={styles.headerSubtitle}>
+            {readyCount} of {totalCount} players ready
+          </Text>
+        )}
       </View>
       
       <View style={styles.roomCodeContainer}>
@@ -121,12 +187,14 @@ export default function WaitingScreen() {
         <Text style={styles.roomCode}>{roomCode}</Text>
       </View>
       
-      <View style={styles.readyIndicator}>
-        <ActivityIndicator size="large" color="#00FFFF" />
-        <Text style={styles.readyIndicatorText}>
-          Waiting for all players to select their songs...
-        </Text>
-      </View>
+      {!countdownStarted && (
+        <View style={styles.readyIndicator}>
+          <ActivityIndicator size="large" color="#00FFFF" />
+          <Text style={styles.readyIndicatorText}>
+            Waiting for all players to get ready...
+          </Text>
+        </View>
+      )}
       
       <View style={styles.playersContainer}>
         <Text style={styles.playersTitle}>Players</Text>
@@ -139,8 +207,12 @@ export default function WaitingScreen() {
       </View>
       
       <View style={styles.youAreReadyContainer}>
-        <Ionicons name="checkmark-circle" size={24} color="#00FF00" />
-        <Text style={styles.youAreReadyText}>You are ready!</Text>
+        <Ionicons name="musical-notes" size={24} color="#00FFFF" />
+        <Text style={styles.youAreReadyText}>
+          {countdownStarted 
+            ? "Get ready to choose your best songs!" 
+            : "Waiting for the host to start the game..."}
+        </Text>
       </View>
     </LinearGradient>
   );
@@ -160,12 +232,26 @@ const styles = StyleSheet.create({
     fontSize: 28,
     fontWeight: '700',
     color: '#FFFFFF',
-    marginBottom: 8,
+    marginBottom: 16,
   },
   headerSubtitle: {
     fontSize: 18,
     color: '#FFFFFF',
     opacity: 0.8,
+  },
+  countdownContainer: {
+    alignItems: 'center',
+  },
+  countdownText: {
+    fontSize: 18,
+    color: '#FFFFFF',
+    opacity: 0.8,
+  },
+  countdownNumber: {
+    fontSize: 48,
+    fontWeight: '800',
+    color: '#00FFFF',
+    marginTop: 8,
   },
   roomCodeContainer: {
     alignItems: 'center',
@@ -268,7 +354,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: 'rgba(0, 255, 0, 0.1)',
+    backgroundColor: 'rgba(0, 255, 255, 0.1)',
     borderRadius: 12,
     padding: 16,
     marginTop: 20,

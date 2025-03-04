@@ -93,15 +93,15 @@ export default function CreateGameScreen() {
   const handleStartGame = () => {
     // If test mode is enabled, we should account for the bot players
     const playerCount = testMode ? players.length + botCount : players.length;
-    
+
     if (playerCount < 2) {
       Alert.alert('Not enough players', 'You need at least 2 players to start a game');
       return;
     }
     
-    // Navigate to song selection
+    // Navigate to waiting room
     router.push({
-      pathname: '/game/select/[roomCode]',
+      pathname: '/game/waiting/[roomCode]',
       params: { 
         roomCode: roomCode as string, 
         spotifyId: spotifyId as string,
@@ -111,28 +111,6 @@ export default function CreateGameScreen() {
       }
     });
   };
-  // Render player item
-  const renderPlayerItem = ({ item, index }: { item: any, index: number }) => (
-    <View style={styles.playerItem}>
-      <View style={styles.playerInfo}>
-        <View style={styles.playerAvatar}>
-          <Text style={styles.playerAvatarText}>{item.username.charAt(0).toUpperCase()}</Text>
-        </View>
-        <View>
-          <Text style={styles.playerName}>@{item.username}</Text>
-          {item.isHost && <Text style={styles.hostBadge}>Host</Text>}
-        </View>
-      </View>
-      
-      <View style={styles.playerStatus}>
-        {item.isReady ? (
-          <Ionicons name="checkmark-circle" size={24} color="#00FF00" />
-        ) : (
-          <Ionicons name="time-outline" size={24} color="#FFAA00" />
-        )}
-      </View>
-    </View>
-  );
 
   // Loading state
   if (loading) {
@@ -163,14 +141,14 @@ export default function CreateGameScreen() {
         <TouchableOpacity style={styles.backButton} onPress={() => router.back()}>
           <Ionicons name="arrow-back" size={24} color="#FFFFFF" />
         </TouchableOpacity>
-        <Text style={styles.headerTitle}>Game Lobby</Text>
+        <Text style={styles.headerTitle}>Song Wars</Text>
         <View style={styles.placeholder} />
       </View>
       
       <View style={styles.roomCodeContainer}>
         <Text style={styles.roomCodeLabel}>Room Code:</Text>
         <Text style={styles.roomCode}>{roomCode}</Text>
-        <Text style={styles.shareText}>Share this code with friends</Text>
+        <Text style={styles.shareText}>Share this code with friends to join</Text>
       </View>
       
       <View style={styles.settingsContainer}>
@@ -233,14 +211,11 @@ export default function CreateGameScreen() {
         </View>
       </View>
       
-      <View style={styles.playersContainer}>
-        <Text style={styles.playersTitle}>Players ({players.length})</Text>
-        <FlatList
-          data={players}
-          keyExtractor={(item) => item.spotifyId}
-          renderItem={renderPlayerItem}
-          contentContainerStyle={styles.playersList}
-        />
+      <View style={styles.hostInstructionsContainer}>
+        <Ionicons name="information-circle-outline" size={24} color="#00FFFF" style={styles.infoIcon} />
+        <Text style={styles.hostInstructionsText}>
+          You're the host! Once your friends join with the room code, click "Start Game" to begin.
+        </Text>
       </View>
       
       <TouchableOpacity
@@ -306,7 +281,7 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
   },
   headerTitle: {
-    fontSize: 24,
+    fontSize: 28,
     fontWeight: '700',
     color: '#FFFFFF',
   },
@@ -316,6 +291,9 @@ const styles = StyleSheet.create({
   roomCodeContainer: {
     alignItems: 'center',
     marginVertical: 20,
+    backgroundColor: 'rgba(0, 0, 0, 0.2)',
+    borderRadius: 16,
+    padding: 20,
   },
   roomCodeLabel: {
     fontSize: 16,
@@ -378,60 +356,22 @@ const styles = StyleSheet.create({
   selectedRoundButtonText: {
     color: '#1A2151',
   },
-  playersContainer: {
-    flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.2)',
+  hostInstructionsContainer: {
+    backgroundColor: 'rgba(0, 255, 255, 0.1)',
     borderRadius: 16,
     padding: 16,
-  },
-  playersTitle: {
-    fontSize: 18,
-    fontWeight: '700',
-    color: '#FFFFFF',
-    marginBottom: 12,
-  },
-  playersList: {
-    paddingBottom: 10,
-  },
-  playerItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    backgroundColor: 'rgba(255, 255, 255, 0.05)',
-    borderRadius: 12,
-    padding: 12,
-    marginBottom: 10,
-  },
-  playerInfo: {
+    marginBottom: 20,
     flexDirection: 'row',
     alignItems: 'center',
   },
-  playerAvatar: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: '#00FFFF',
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginRight: 12,
+  infoIcon: {
+    marginRight: 10,
   },
-  playerAvatarText: {
-    fontSize: 18,
-    fontWeight: '700',
-    color: '#1A2151',
-  },
-  playerName: {
-    fontSize: 16,
-    fontWeight: '600',
+  hostInstructionsText: {
+    flex: 1,
+    fontSize: 14,
     color: '#FFFFFF',
-  },
-  hostBadge: {
-    fontSize: 12,
-    color: '#00FFFF',
-    marginTop: 2,
-  },
-  playerStatus: {
-    paddingRight: 8,
+    lineHeight: 20,
   },
   startButton: {
     borderRadius: 12,
