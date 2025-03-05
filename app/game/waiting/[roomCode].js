@@ -35,7 +35,8 @@ export default function WaitingRoomScreen() {
     joinRoom,
     setPlayerReady,
     gameState,
-    currentPhase
+    currentPhase,
+    startGame, // New function to start the game
   } = useGameState(
     roomCode,
     spotifyId,
@@ -66,10 +67,33 @@ export default function WaitingRoomScreen() {
     }
   }, [isWaitingToJoin, roomCode, spotifyId, username, joinRoom]);
   
+  // Determine if current player is the host
+  const isHost = players.find(p => p.spotifyId === spotifyId)?.isHost || false;
+  
+  // Determine if all players are ready
+  const allPlayersReady = players.length >= 2 && players.every(p => p.isReady);
+  
   // Handle ready button press
   const handleReadyPress = () => {
     setPlayerReady([]);
     setIsReady(true);
+  };
+  
+  // Handle start game button press (host only)
+  const handleStartGame = () => {
+    if (isHost) {
+      if (players.length < 2) {
+        Alert.alert("Not enough players", "You need at least 2 players to start the game.");
+        return;
+      }
+      
+      if (!allPlayersReady) {
+        Alert.alert("Players not ready", "All players must be ready before starting the game.");
+        return;
+      }
+      
+      startGame();
+    }
   };
   
   // Loading state
@@ -120,14 +144,20 @@ export default function WaitingRoomScreen() {
       </View>
       
       <View style={styles.playersContainer}>
-        <Text style={styles.sectionTitle}>Players ({players.length})</Text>
+        <Text style={styles.sectionTitle}>
+          Players ({players.length})
+          {isHost && <Text style={styles.hostIndicator}> - You are the host</Text>}
+        </Text>
         <FlatList
           data={players}
           keyExtractor={(item) => item.spotifyId}
           renderItem={({ item }) => (
             <View style={styles.playerItem}>
               <View style={styles.playerInfo}>
-                <Text style={styles.playerName}>{item.username}</Text>
+                <Text style={styles.playerName}>
+                  {item.username}
+                  {item.spotifyId === spotifyId && " (You)"}
+                </Text>
                 {item.isHost && (
                   <View style={styles.hostBadge}>
                     <Text style={styles.hostBadgeText}>Host</Text>
@@ -151,28 +181,76 @@ export default function WaitingRoomScreen() {
       <View style={styles.instructionsContainer}>
         <Ionicons name="information-circle" size={24} color="#00FFFF" />
         <Text style={styles.instructionsText}>
-          When you're ready to play, press the "I'm Ready!" button below. Once all players are ready, the game will automatically proceed to song selection.
+          {isHost ? (
+            "As the host, you can start the game once all players are ready. Click 'Start Game' when everyone is ready."
+          ) : (
+            "When you're ready to play, press the 'I'm Ready!' button below. Once all players are ready, the host will start the game."
+          )}
         </Text>
       </View>
       
-      <TouchableOpacity
-        style={[
-          styles.readyButton,
-          isReady ? styles.readyButtonDisabled : styles.readyButtonActive
-        ]}
-        onPress={handleReadyPress}
-        disabled={isReady}
-      >
-        <LinearGradient
-          colors={isReady ? ['#666666', '#444444'] : ['#00FFAA', '#00AAFF']}
-          style={styles.readyButtonGradient}
+      {/* Regular player ready button */}
+      {!isHost && (
+        <TouchableOpacity
+          style={[
+            styles.readyButton,
+            isReady ? styles.readyButtonDisabled : styles.readyButtonActive
+          ]}
+          onPress={handleReadyPress}
+          disabled={isReady}
         >
-          <Text style={styles.readyButtonText}>
-            {isReady ? 'Waiting for other players...' : 'I\'m Ready!'}
-          </Text>
-          {isReady && <ActivityIndicator size="small" color="#FFFFFF" style={styles.readyIndicator} />}
-        </LinearGradient>
-      </TouchableOpacity>
+          <LinearGradient
+            colors={isReady ? ['#666666', '#444444'] : ['#00FFAA', '#00AAFF']}
+            style={styles.readyButtonGradient}
+          >
+            <Text style={styles.readyButtonText}>
+              {isReady ? 'Waiting for other players...' : 'I\'m Ready!'}
+            </Text>
+            {isReady && <ActivityIndicator size="small" color="#FFFFFF" style={styles.readyIndicator} />}
+          </LinearGradient>
+        </TouchableOpacity>
+      )}
+      
+      {/* Host buttons: Ready + Start Game */}
+      {isHost && (
+        <>
+          <TouchableOpacity
+            style={[
+              styles.readyButton,
+              isReady ? styles.readyButtonDisabled : styles.readyButtonActive
+            ]}
+            onPress={handleReadyPress}
+            disabled={isReady}
+          >
+            <LinearGradient
+              colors={isReady ? ['#666666', '#444444'] : ['#00FFAA', '#00AAFF']}
+              style={styles.readyButtonGradient}
+            >
+              <Text style={styles.readyButtonText}>
+                {isReady ? 'Ready' : 'I\'m Ready!'}
+              </Text>
+              {isReady && <Ionicons name="checkmark" size={20} color="#FFFFFF" style={styles.readyIcon} />}
+            </LinearGradient>
+          </TouchableOpacity>
+          
+          <TouchableOpacity
+            style={[
+              styles.startGameButton,
+              (!allPlayersReady) ? styles.startGameButtonDisabled : {}
+            ]}
+            onPress={handleStartGame}
+            disabled={!allPlayersReady}
+          >
+            <LinearGradient
+              colors={allPlayersReady ? ['#FF00AA', '#AA00FF'] : ['#666666', '#444444']}
+              style={styles.startGameButtonGradient}
+            >
+              <Text style={styles.startGameButtonText}>Start Game</Text>
+              <Ionicons name="play" size={20} color="#FFFFFF" style={styles.startIcon} />
+            </LinearGradient>
+          </TouchableOpacity>
+        </>
+      )}
     </LinearGradient>
   );
 }
@@ -262,13 +340,17 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(0, 0, 0, 0.2)',
     borderRadius: 16,
     padding: 16,
-    maxHeight: '40%',
+    maxHeight: '30%',
   },
   sectionTitle: {
     fontSize: 16,
     fontWeight: '700',
     color: '#FFFFFF',
     marginBottom: 12,
+  },
+  hostIndicator: {
+    color: '#00FFFF',
+    fontWeight: '400',
   },
   playersList: {
     paddingBottom: 8,
@@ -334,7 +416,7 @@ const styles = StyleSheet.create({
   },
   readyButton: {
     marginHorizontal: 20,
-    marginBottom: 30,
+    marginBottom: 16,
     borderRadius: 12,
     overflow: 'hidden',
   },
@@ -358,5 +440,32 @@ const styles = StyleSheet.create({
   },
   readyIndicator: {
     marginLeft: 8,
+  },
+  readyIcon: {
+    marginLeft: 8,
+  },
+  startGameButton: {
+    marginHorizontal: 20,
+    marginBottom: 30,
+    borderRadius: 12,
+    overflow: 'hidden',
+  },
+  startGameButtonDisabled: {
+    opacity: 0.5,
+  },
+  startGameButtonGradient: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 16,
+  },
+  startGameButtonText: {
+    color: '#FFFFFF',
+    fontSize: 18,
+    fontWeight: '700',
+    marginRight: 8,
+  },
+  startIcon: {
+    marginLeft: 4,
   },
 });

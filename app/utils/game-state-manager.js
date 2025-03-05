@@ -274,6 +274,15 @@ export const useGameState = (roomCode, spotifyId, onError, testMode = false, bot
     // Loading complete
     setIsLoading(false);
   };
+  const startGame = () => {
+    if (!roomCode || !spotifyId) {
+      onError("Missing roomCode or spotifyId");
+      return;
+    }
+    
+    console.log(`Host ${spotifyId} starting game in room ${roomCode}`);
+    socketManager.emit('startGame', { roomCode, spotifyId });
+  };
   
   // Load player's songs for the current round
   const loadPlayerSongs = (state) => {
@@ -349,6 +358,7 @@ export const useGameState = (roomCode, spotifyId, onError, testMode = false, bot
   return {
     currentPhase,
     timeLeft,
+    
     category,
     round,
     totalRounds,
@@ -371,6 +381,7 @@ export const useGameState = (roomCode, spotifyId, onError, testMode = false, bot
     gameState,
     setSelectedSongForSubmission,
     setSelectedVote,
+    startGame,
     submitSong,
     submitVote,
     joinRoom,
