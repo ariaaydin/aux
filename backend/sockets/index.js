@@ -1,6 +1,5 @@
-// Fixes for the socket handlers (to be added to your socket index.js file)
+// sockets/index.js
 
-// Import necessary modules and functions
 const { gameStateForClient } = require('../game/stateManager');
 const { startGameCountdown, transitionToNextPhase } = require('../game/phaseTransitions');
 
@@ -105,3 +104,5 @@ module.exports = (server) => {
   
   return io;
 };
+
+

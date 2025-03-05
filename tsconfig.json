@@ -13,5 +13,5 @@
     "**/*.tsx",
     ".expo/types/**/*.ts",
     "expo-env.d.ts"
-  ]
+, "app/game/create.js", "app/game/waiting/[roomCode].js", "app/game/play/[roomCode].js", "app/utils/game-state-manager.js", "app/utils/socket-manager.js", "app/utils/types.js"  ]
 }

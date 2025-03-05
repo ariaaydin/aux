@@ -757,6 +757,7 @@ const PHASE_DURATIONS = {
 };
 // Socket to room mapping for quick access
 const socketToRoom = {};
+const activeTimers = {};
 
 // Helper function to generate a unique room code
 const generateRoomCode = () => {
@@ -825,6 +826,7 @@ const gameStateForClient = (gameRoom) => {
   };
 };
 
+
 // Helper function to transition to the next game phase
 // Replace your existing transitionToNextPhase function with this one
 const transitionToNextPhase = async (roomCode) => {
@@ -884,8 +886,10 @@ const transitionToNextPhase = async (roomCode) => {
         });
         await gameRoom.save();
         io.to(roomCode).emit('gameState', gameStateForClient(gameRoom));
-        setTimeout(() => transitionToNextPhase(roomCode), PHASE_DURATIONS.category * 1000);
-        return;
+        activeTimers[roomCode] = setTimeout(() => {
+          transitionToNextPhase(roomCode);
+          delete activeTimers[roomCode];
+        }, phaseDuration * 1000);        return;
     }
 
     currentRound.phase = nextPhase;
@@ -896,6 +900,7 @@ const transitionToNextPhase = async (roomCode) => {
 
     if (nextPhase === 'submission') {
       setTimeout(() => handleBotSubmissions(roomCode), 2000); // Adjusted delay
+    
     } else if (nextPhase === 'voting') {
       setTimeout(() => handleBotVotes(roomCode), 5000); // Adjusted delay
     }
@@ -926,6 +931,38 @@ const startPlaybackSequence = (roomCode, submissions) => {
     console.log('Emitting playback update:', { index: currentIndex });
     io.to(roomCode).emit('playbackUpdate', { index: currentIndex });
   }, PHASE_DURATIONS.playback * 1000); // 30s per track
+};
+
+/**
+ * Cancel the current phase timer for a room
+ * @param {string} roomCode - Room code
+ */
+const cancelPhaseTimer = (roomCode) => {
+  // Store active timers in an object for tracking
+  if (activeTimers && activeTimers[roomCode]) {
+    clearTimeout(activeTimers[roomCode]);
+    delete activeTimers[roomCode];
+    console.log(`Cancelled phase timer for room ${roomCode}`);
+  }
+};
+
+/**
+ * Manually progress to the next phase (for test mode)
+ * @param {string} roomCode - Room code
+ * @returns {Promise<void>}
+ */
+const manualProgressPhase = async (roomCode) => {
+  try {
+    // Cancel any existing timer
+    cancelPhaseTimer(roomCode);
+    
+    // Transition immediately
+    await transitionToNextPhase(roomCode);
+    
+    console.log(`Manually progressed phase for room ${roomCode}`);
+  } catch (error) {
+    console.error('Error in manual phase progression:', error);
+  }
 };
 
 // Helper function to calculate round results
@@ -1290,7 +1327,38 @@ io.on('connection', (socket) => {
       // For now, we'll leave them in case they reconnect
     }
   });
+  // Add these inside the io.on('connection', (socket) => {...}) block
+socket.on('rejoinRoom', async ({ roomCode }) => {
+  try {
+    const gameRoom = await GameRoom.findOne({ roomCode });
+    if (gameRoom) {
+      socket.join(roomCode);
+      socketToRoom[socket.id] = roomCode;
+      console.log(`Socket ${socket.id} rejoined room ${roomCode}`);
+    }
+  } catch (error) {
+    console.error('Error rejoining room:', error);
+  }
 });
+
+socket.on('manualProgressPhase', async ({ roomCode }) => {
+  try {
+    const gameRoom = await GameRoom.findOne({ roomCode });
+    
+    if (!gameRoom || gameRoom.status !== 'playing') {
+      return socket.emit('gameError', { message: 'Game not in progress' });
+    }
+    
+    console.log(`Manual phase progression requested for room ${roomCode}`);
+    manualProgressPhase(roomCode);
+  } catch (error) {
+    console.error('Error with manual phase progression:', error);
+    socket.emit('gameError', { message: 'Failed to progress phase' });
+  }
+});
+});
+
+
 
 
 

@@ -1,5 +1,5 @@
-// app/game/create.tsx
-import React, { useState, useEffect } from 'react';
+// app/game/create.js
+import React, { useState, useEffect, useRef } from 'react';
 import {
   View,
   Text,
@@ -7,87 +7,135 @@ import {
   TouchableOpacity,
   ActivityIndicator,
   Alert,
-  FlatList,
   Switch
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import io from 'socket.io-client';
+import socketManager from '../utils/socket-manager';
 
 export default function CreateGameScreen() {
   const { spotifyId, username } = useLocalSearchParams();
   const [loading, setLoading] = useState(true);
-  const [roomCode, setRoomCode] = useState<string | null>(null);
-  const [players, setPlayers] = useState<any[]>([]);
+  const [roomCode, setRoomCode] = useState(null);
+  const [players, setPlayers] = useState([]);
   const [roundCount, setRoundCount] = useState(5);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState(null);
   const [testMode, setTestMode] = useState(false);
   const [botCount, setBotCount] = useState(3); // Default to 3 bots
+  
+  // Use refs to prevent duplicate event handling
+  const hasCreatedRoom = useRef(false);
+  const loadingTimeout = useRef(null);
   
   const router = useRouter();
   
   // Connect to socket server and create a room
   useEffect(() => {
-    const socket = io('http://localhost:3000');
+    // Only execute this code once
+    if (hasCreatedRoom.current) return;
+    hasCreatedRoom.current = true;
     
-    // Handle connection error
-    socket.on('connect_error', (err) => {
+    // Initialize socket manager
+    socketManager.init('');    
+    
+    // Add a slight delay before showing loading
+    loadingTimeout.current = setTimeout(() => {
+      if (!roomCode) {
+        setLoading(true);
+      }
+    }, 300);
+    
+    // Register event handlers
+    socketManager.on('connect_error', (err) => {
       console.error('Socket connection error:', err);
       setError('Failed to connect to the game server');
       setLoading(false);
-    });
-    
-    // Handle connection
-    socket.on('connect', () => {
-      console.log('Connected to socket server');
       
-      // Create a new room
-      socket.emit('createRoom', { 
-        spotifyId: spotifyId as string, 
-        username: username as string 
-      });
+      if (loadingTimeout.current) {
+        clearTimeout(loadingTimeout.current);
+        loadingTimeout.current = null;
+      }
     });
     
-    // Handle room created event
-    socket.on('roomCreated', ({ roomCode, gameState }) => {
+    socketManager.on('roomCreated', (data) => {
+      const { roomCode, gameState } = data;
       console.log('Room created:', roomCode);
+      
+      if (loadingTimeout.current) {
+        clearTimeout(loadingTimeout.current);
+        loadingTimeout.current = null;
+      }
+      
       setRoomCode(roomCode);
       setPlayers(gameState.players);
       setLoading(false);
     });
     
-    // Handle player joined event
-    socket.on('playerJoined', ({ gameState }) => {
+    socketManager.on('playerJoined', (data) => {
+      const { gameState } = data;
       console.log('Player joined');
       setPlayers(gameState.players);
     });
     
-    // Handle game error
-    socket.on('gameError', ({ message }) => {
+    socketManager.on('gameError', (data) => {
+      const { message } = data;
       console.error('Game error:', message);
       setError(message);
       setLoading(false);
+      
+      if (loadingTimeout.current) {
+        clearTimeout(loadingTimeout.current);
+        loadingTimeout.current = null;
+      }
     });
     
-    // Start game when all players are ready
-    socket.on('gameStarted', ({ gameState }) => {
+    socketManager.on('gameStarted', (data) => {
       console.log('Game started!');
-      router.replace({
-        pathname: '/game/play/[roomCode]',
-        params: { 
-          roomCode: roomCode as string, 
-          spotifyId: spotifyId as string,
-          username: username as string
-        }
-      });
+      
+      if (roomCode) {
+        router.replace({
+          pathname: '/game/play/[roomCode]',
+          params: { 
+            roomCode: roomCode, 
+            spotifyId: spotifyId,
+            username: username
+          }
+        });
+      }
     });
     
-    // Cleanup on unmount
+    // Create a new room
+    console.log('Creating room for user:', spotifyId, username);
+    socketManager.emit('createRoom', { 
+      spotifyId: spotifyId, 
+      username: username,
+      totalRounds: roundCount // Pass round count to server
+    });
+    
+    // Cleanup event handlers on unmount
     return () => {
-      socket.disconnect();
+      if (loadingTimeout.current) {
+        clearTimeout(loadingTimeout.current);
+      }
+      
+      socketManager.off('connect_error');
+      socketManager.off('roomCreated');
+      socketManager.off('playerJoined');
+      socketManager.off('gameError');
+      socketManager.off('gameStarted');
     };
-  }, [roomCode]);
+  }, []); // Empty dependency array ensures this runs once
+
+  // Update round count on server when it changes
+  useEffect(() => {
+    if (roomCode) {
+      socketManager.emit('updateRoundCount', { 
+        roomCode,
+        roundCount
+      });
+    }
+  }, [roomCode, roundCount]);
 
   // Start the game
   const handleStartGame = () => {
@@ -103,9 +151,9 @@ export default function CreateGameScreen() {
     router.push({
       pathname: '/game/waiting/[roomCode]',
       params: { 
-        roomCode: roomCode as string, 
-        spotifyId: spotifyId as string,
-        username: username as string,
+        roomCode: roomCode, 
+        spotifyId: spotifyId,
+        username: username,
         testMode: testMode ? 'true' : 'false',
         botCount: botCount.toString()
       }
@@ -151,6 +199,7 @@ export default function CreateGameScreen() {
         <Text style={styles.shareText}>Share this code with friends to join</Text>
       </View>
       
+      {/* Game settings section */}
       <View style={styles.settingsContainer}>
         <Text style={styles.settingsTitle}>Game Settings</Text>
         <View style={styles.roundSelector}>

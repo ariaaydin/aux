@@ -1,3 +1,4 @@
+// app/game/select/[roomCode].js
 import React, { useState, useEffect, useRef } from 'react';
 import {
   View,
@@ -25,14 +26,14 @@ const COUNTDOWN_DURATION = 20; // 20-second countdown timer
 export default function SongSelectionScreen() {
   const { roomCode, spotifyId, username } = useLocalSearchParams();
   const [loading, setLoading] = useState(true);
-  const [allSongs, setAllSongs] = useState<any[]>([]); // Store all fetched songs
-  const [revealedSongs, setRevealedSongs] = useState<any[]>([]); // Songs currently revealed
+  const [allSongs, setAllSongs] = useState([]); // Store all fetched songs
+  const [revealedSongs, setRevealedSongs] = useState([]); // Songs currently revealed
   const [shufflesLeft, setShufflesLeft] = useState(MAX_SHUFFLES);
-  const [token, setToken] = useState<string | null>(null);
-  const [socket, setSocket] = useState<any>(null);
+  const [token, setToken] = useState(null);
+  const [socket, setSocket] = useState(null);
   const [countdown, setCountdown] = useState(COUNTDOWN_DURATION);
   const [countdownActive, setCountdownActive] = useState(true);
-  const [usedSongIds, setUsedSongIds] = useState<string[]>([]);
+  const [usedSongIds, setUsedSongIds] = useState([]);
   
   // Animation values for each song (up to 6)
   const animatedValues = useRef(
@@ -73,7 +74,7 @@ export default function SongSelectionScreen() {
   useEffect(() => {
     if (!countdownActive) return;
     
-    let timer: NodeJS.Timeout;
+    let timer;
     
     if (countdown > 0) {
       timer = setTimeout(() => {
@@ -170,24 +171,8 @@ export default function SongSelectionScreen() {
         return;
       }
       
-      interface SpotifyTrack {
-        track: {
-          id: string;
-          name: string;
-          artists: { name: string }[];
-          album: { images: { url: string }[] };
-        };
-      }
-  
-      interface Song {
-        trackId: string;
-        trackName: string;
-        trackArtist: string;
-        trackImage: string;
-      }
-  
       // Filter out previously used songs - completely remove them
-      const filteredItems = data.items.filter((item: SpotifyTrack) => 
+      const filteredItems = data.items.filter(item => 
         !usedSongIds.includes(item.track.id)
       );
       
@@ -196,10 +181,10 @@ export default function SongSelectionScreen() {
         Alert.alert('Warning', 'Running low on unused songs. Some previously used songs might appear.');
         
         // Use what we have, prioritizing unused songs
-        const shuffled: Song[] = [...filteredItems]
+        const shuffled = [...filteredItems]
           .sort(() => 0.5 - Math.random())
           .slice(0, Math.min(MAX_SONGS, filteredItems.length))
-          .map((item: SpotifyTrack) => ({
+          .map(item => ({
             trackId: item.track.id,
             trackName: item.track.name,
             trackArtist: item.track.artists.map(a => a.name).join(', '),
@@ -208,14 +193,14 @@ export default function SongSelectionScreen() {
         
         // Only if we don't have enough unused songs, add some used ones
         if (shuffled.length < MAX_SONGS) {
-          const usedItems = data.items.filter((item: SpotifyTrack) => 
+          const usedItems = data.items.filter(item => 
             usedSongIds.includes(item.track.id)
           );
           
-          const additionalSongs: Song[] = [...usedItems]
+          const additionalSongs = [...usedItems]
             .sort(() => 0.5 - Math.random())
             .slice(0, MAX_SONGS - shuffled.length)
-            .map((item: SpotifyTrack) => ({
+            .map(item => ({
               trackId: item.track.id,
               trackName: item.track.name,
               trackArtist: item.track.artists.map(a => a.name).join(', '),
@@ -229,10 +214,10 @@ export default function SongSelectionScreen() {
         animateSongReveal(shuffled);
       } else {
         // Use only unused songs
-        const shuffled: Song[] = [...filteredItems]
+        const shuffled = [...filteredItems]
           .sort(() => 0.5 - Math.random())
           .slice(0, MAX_SONGS)
-          .map((item: SpotifyTrack) => ({
+          .map(item => ({
             trackId: item.track.id,
             trackName: item.track.name,
             trackArtist: item.track.artists.map(a => a.name).join(', '),
@@ -250,9 +235,8 @@ export default function SongSelectionScreen() {
     }
   };
   
-
   // Animate revealing songs one by one
-  const animateSongReveal = (newSongs: any[]) => {
+  const animateSongReveal = (newSongs) => {
     newSongs.forEach((song, index) => {
       setTimeout(() => {
         setRevealedSongs(prev => [...prev, song]);
@@ -335,15 +319,15 @@ export default function SongSelectionScreen() {
     router.push({
       pathname: '/game/play/[roomCode]',
       params: { 
-        roomCode: roomCode as string, 
-        spotifyId: spotifyId as string,
-        username: username as string
+        roomCode: roomCode, 
+        spotifyId: spotifyId,
+        username: username
       }
     });
   };
 
   // Render song item
-  const renderSongItem = ({ item, index }: { item: any; index: number }) => (
+  const renderSongItem = ({ item, index }) => (
     <Animated.View
       style={[
         styles.songItem,
