@@ -9,6 +9,9 @@ let io;
 // Active timers by room code
 const activeTimers = {};
 
+// Track playback state for each room
+const roomPlaybackState = {};
+
 // Phase durations in seconds
 const PHASE_DURATIONS = {
   category: 10,
@@ -109,30 +112,71 @@ const gameStateForClient = (gameRoom) => {
 const startPlaybackSequence = (roomCode, submissions) => {
   console.log(`Starting playback sequence for room ${roomCode} with ${submissions.length} submissions`);
   
-  // Start with first track
-  let currentIndex = 0;
-  io.to(roomCode).emit('playbackUpdate', { index: currentIndex });
+  // Store current playback state in memory
+  if (!roomPlaybackState[roomCode]) {
+    roomPlaybackState[roomCode] = { 
+      currentIndex: 0,
+      submissions: submissions,
+      startTime: Date.now()
+    };
+  }
+  
+  // Initialize with first track
+  const state = roomPlaybackState[roomCode];
+  state.currentIndex = 0;
+  
+  // Emit first track to all clients
+  io.to(roomCode).emit('playbackUpdate', { 
+    index: state.currentIndex,
+    remainingTime: PHASE_DURATIONS.playback
+  });
   
   // Create interval to cycle through tracks
-  const interval = setInterval(async () => {
-    currentIndex++;
-    
-    // Check if we've played all tracks
-    if (currentIndex >= submissions.length) {
-      clearInterval(interval);
+  if (activeTimers[`${roomCode}-playback`]) {
+    clearInterval(activeTimers[`${roomCode}-playback`]);
+  }
+  
+  // Using setInterval but with more robust error handling
+  const interval = setInterval(() => {
+    try {
+      // Get the current state
+      const state = roomPlaybackState[roomCode];
+      if (!state) {
+        // If state is gone, clear the interval
+        clearInterval(interval);
+        delete activeTimers[`${roomCode}-playback`];
+        return;
+      }
       
-      // Move to voting phase
-      console.log(`Playback complete for room ${roomCode}, moving to voting phase`);
-      transitionToNextPhase(roomCode);
-      return;
+      // Move to next track
+      state.currentIndex++;
+      
+      // Check if we've played all tracks
+      if (state.currentIndex >= state.submissions.length) {
+        clearInterval(interval);
+        delete activeTimers[`${roomCode}-playback`];
+        delete roomPlaybackState[roomCode];
+        
+        // DO NOT directly call transitionToNextPhase here
+        // The main timer from transitionToNextPhase will handle it
+        console.log(`Playback sequence complete for room ${roomCode}`);
+        return;
+      }
+      
+      // Emit current track index
+      console.log(`Playing track ${state.currentIndex + 1}/${state.submissions.length} for room ${roomCode}`);
+      io.to(roomCode).emit('playbackUpdate', { 
+        index: state.currentIndex,
+        remainingTime: PHASE_DURATIONS.playback
+      });
+      
+    } catch (error) {
+      console.error(`Error in playback sequence for room ${roomCode}:`, error);
+      // Continue playback despite error
     }
-    
-    // Emit current track index
-    console.log(`Playing track ${currentIndex + 1}/${submissions.length} for room ${roomCode}`);
-    io.to(roomCode).emit('playbackUpdate', { index: currentIndex });
   }, PHASE_DURATIONS.playback * 1000);
   
-  // Save interval reference
+  // Save interval reference for cleanup
   activeTimers[`${roomCode}-playback`] = interval;
 };
 
@@ -281,6 +325,9 @@ const handleBotSubmissions = async (roomCode) => {
         trackId: randomSong.trackId,
         votes: []
       });
+      
+      // Remove the song from the bot's available songs
+      bot.selectedSongs = bot.selectedSongs.filter(s => s.trackId !== randomSong.trackId);
       
       submissionsAdded++;
     }
@@ -441,6 +488,12 @@ const cancelPhaseTimer = (roomCode) => {
     delete activeTimers[`${roomCode}-playback`];
     console.log(`Cancelled playback interval for room ${roomCode}`);
   }
+  
+  // Clean up playback state
+  if (roomPlaybackState[roomCode]) {
+    delete roomPlaybackState[roomCode];
+    console.log(`Cleaned up playback state for room ${roomCode}`);
+  }
 };
 
 /**
@@ -502,26 +555,42 @@ const transitionToNextPhase = async (roomCode) => {
         break;
         
       case 'submission':
-        nextPhase = 'playback';
-        
-        // If no submissions, skip to voting
+        // Always go to playback if there are submissions
         if (!currentRound.submissions || currentRound.submissions.length === 0) {
           console.log(`No submissions in room ${roomCode}, skipping to voting`);
           nextPhase = 'voting';
           phaseDuration = PHASE_DURATIONS.voting;
         } else {
-          // Start playback sequence (no need to set timeout as sequence handles transitions)
-          console.log(`Starting playback sequence with ${currentRound.submissions.length} submissions`);
+          nextPhase = 'playback';
+          // Set the full playback duration based on number of songs
+          phaseDuration = PHASE_DURATIONS.playback * currentRound.submissions.length;
+          
+          // Update phase first to ensure consistency
           currentRound.phase = nextPhase;
-          currentRound.phaseEndTime = null; // Playback handles its own timing
+          currentRound.phaseEndTime = new Date(Date.now() + (phaseDuration * 1000));
           await gameRoom.save();
           
           // Send updated game state
           io.to(roomCode).emit('gameState', gameStateForClient(gameRoom));
           
-          // Start playback sequence (which will handle the transition to voting)
+          // Start playback sequence (doesn't transition to next phase by itself)
           startPlaybackSequence(roomCode, currentRound.submissions);
-          return;
+          
+          // Set a single timer for the entire playback phase
+          activeTimers[roomCode] = setTimeout(() => {
+            // Verify we're still in playback phase before transitioning
+            GameRoom.findOne({ roomCode }).then(currentRoom => {
+              if (currentRoom && 
+                  currentRoom.status === 'playing' &&
+                  currentRoom.rounds[currentRoundIndex] &&
+                  currentRoom.rounds[currentRoundIndex].phase === 'playback') {
+                transitionToNextPhase(roomCode);
+              }
+            });
+            delete activeTimers[roomCode];
+          }, phaseDuration * 1000);
+          
+          return; // Exit early to avoid setting another timer
         }
         break;
         
@@ -558,6 +627,13 @@ const transitionToNextPhase = async (roomCode) => {
         
         // Increment round counter
         gameRoom.currentRound += 1;
+        
+        // Make sure we have a category for this round
+        const categoryIndex = gameRoom.currentRound - 1;
+        if (categoryIndex >= gameRoom.categories.length) {
+          console.log(`Warning: Not enough categories for round ${gameRoom.currentRound}. Using fallback.`);
+          gameRoom.categories.push("Mystery Song Challenge");
+        }
         
         // Create new round
         gameRoom.rounds.push({

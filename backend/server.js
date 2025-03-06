@@ -1192,7 +1192,134 @@ io.on('connection', (socket) => {
 
   socket.on('enableTestMode', async ({ roomCode, spotifyId, botCount }) => {
     console.log(`Enabling test mode with ${botCount} bots for room ${roomCode}`);
-    await createBotPlayers(roomCode, botCount, spotifyId);
+    try {
+      // Verify the room exists and is in waiting state
+      const gameRoom = await GameRoom.findOne({ roomCode });
+      if (!gameRoom) {
+        socket.emit('gameError', { message: 'Room not found' });
+        return;
+      }
+      
+      if (gameRoom.status !== 'waiting') {
+        socket.emit('gameError', { message: 'Cannot add bots, game already started' });
+        return;
+      }
+      
+      // This is the key fix - ALWAYS remove existing bots
+      gameRoom.players = gameRoom.players.filter(p => !p.spotifyId.startsWith('bot-'));
+      
+      // Bot player names
+      const botNames = ['DJ Bot', 'RhythmMaster', 'BeatBot', 'MelodyAI', 'TuneBot', 'SonicBot', 'GrooveBot'];
+      
+      // Sample song data - ENSURE ALL REQUIRED FIELDS ARE INCLUDED
+      const sampleSongs = [
+        {
+          trackId: '4cOdK2wGLETKBW3PvgPWqT',
+          trackName: 'Bohemian Rhapsody',
+          trackArtist: 'Queen',
+          trackImage: 'https://i.scdn.co/image/ab67616d0000b273c9f744b5fe8014d3055f8b84'
+        },
+        {
+          trackId: '4u7EnebtmKWzUH433cf5Qv',
+          trackName: 'Imagine',
+          trackArtist: 'John Lennon',
+          trackImage: 'https://i.scdn.co/image/ab67616d0000b27345b1fe93dba79143e8cc22ee'
+        },
+        {
+          trackId: '7tFiyTwD0nx5a1eklYtX2J', 
+          trackName: 'Don\'t Stop Believin\'',
+          trackArtist: 'Journey',
+          trackImage: 'https://i.scdn.co/image/ab67616d0000b2736c40899b6c6e566129e5e989'
+        },
+        {
+          trackId: '3z8h0TU7ReDPLIbEnYhWZb',
+          trackName: 'Billie Jean',
+          trackArtist: 'Michael Jackson',
+          trackImage: 'https://i.scdn.co/image/ab67616d0000b273de437d960dda1ac0a3586d97'
+        },
+        {
+          trackId: '5HNCy40Ni5BZJFw1TKzRsC',
+          trackName: 'Hotel California',
+          trackArtist: 'Eagles',
+          trackImage: 'https://i.scdn.co/image/ab67616d0000b2735656d4cddee2233abc300a6e'
+        },
+        {
+          trackId: '1lCRw5FEZ1gPDNPzy1K4zW',
+          trackName: 'Sweet Child O\' Mine',
+          trackArtist: 'Guns N\' Roses',
+          trackImage: 'https://i.scdn.co/image/ab67616d0000b2736f0643d07329a71d40290983'
+        },
+        {
+          trackId: '5CQ30WqJwcep0pYcV4AMNc',
+          trackName: 'Stairway to Heaven',
+          trackArtist: 'Led Zeppelin',
+          trackImage: 'https://i.scdn.co/image/ab67616d0000b27351c02a77d09dfcd53c8676d0'
+        },
+        {
+          trackId: '1BxfuPKGuaTgP7aM0Bbdwr',
+          trackName: 'Smells Like Teen Spirit',
+          trackArtist: 'Nirvana',
+          trackImage: 'https://i.scdn.co/image/ab67616d0000b273e175a19e530c898d167d39bf'
+        }
+      ];
+      
+      // Create bot players
+      const actualBotCount = Math.min(botCount, botNames.length);
+      
+      for (let i = 0; i < actualBotCount; i++) {
+        // Generate a fake Spotify ID
+        const botSpotifyId = `bot-${i}-${Date.now()}`;
+        
+        // Create 10 random songs for this bot (ensuring each has required fields)
+        const botSongs = [];
+        for (let j = 0; j < 10; j++) {
+          // Ensure we get a different song for each slot by using modulo
+          const songIndex = (i + j) % sampleSongs.length;
+          const sampleSong = sampleSongs[songIndex];
+          
+          // Make a deep copy with a unique ID for this bot
+          const botSong = {
+            trackId: `${sampleSong.trackId}-bot${i}-${j}`,
+            trackName: sampleSong.trackName,
+            trackArtist: sampleSong.trackArtist,
+            trackImage: sampleSong.trackImage
+          };
+          
+          botSongs.push(botSong);
+        }
+        
+        // Add bot player to game room with isReady explicitly set to true
+        gameRoom.players.push({
+          spotifyId: botSpotifyId,
+          username: botNames[i],
+          isHost: false,
+          isReady: true, // Ensure this is always true
+          selectedSongs: botSongs
+        });
+      }
+      
+      await gameRoom.save();
+      console.log(`Added ${actualBotCount} bots to room ${roomCode}`);
+      
+      // Force an immediate update to all clients
+      io.to(roomCode).emit('gameState', gameStateForClient(gameRoom));
+      
+      // Make sure all clients know about the bot's ready status
+      for (const player of gameRoom.players) {
+        if (player.spotifyId.startsWith('bot-')) {
+          io.to(roomCode).emit('playerReady', {
+            spotifyId: player.spotifyId,
+            isReady: true
+          });
+        }
+      }
+      
+      socket.emit('testModeEnabled', { success: true });
+      
+    } catch (error) {
+      console.error(`Error enabling test mode for room ${roomCode}:`, error);
+      socket.emit('gameError', { message: 'Failed to enable test mode: ' + error.message });
+    }
   });
   
   
@@ -1282,8 +1409,8 @@ io.on('connection', (socket) => {
     }
   });
   
-  // Inside the socket.io connection handler:
-socket.on('setReady', async ({ roomCode, spotifyId, selectedSongs }) => {
+ // In the 'setReady' handler in server.js
+ socket.on('setReady', async ({ roomCode, spotifyId, selectedSongs }) => {
   try {
     const gameRoom = await GameRoom.findOne({ roomCode });
     if (!gameRoom) {
@@ -1292,31 +1419,23 @@ socket.on('setReady', async ({ roomCode, spotifyId, selectedSongs }) => {
 
     const playerIndex = gameRoom.players.findIndex(p => p.spotifyId === spotifyId);
     if (playerIndex !== -1) {
-      // Update ready status and store selected songs
+      // Explicitly set ready to true
       gameRoom.players[playerIndex].isReady = true;
       
-      // Ensure the player has the correct number of songs (totalRounds + 1)
-      // This way they always have an extra song in case all songs get used
+      // Handle songs if provided
       if (selectedSongs && selectedSongs.length > 0) {
-        // Make sure we store at least the required number of songs
-        const requiredSongs = gameRoom.totalRounds + 1;
-        if (selectedSongs.length < requiredSongs) {
-          console.log(`Warning: Player ${spotifyId} has fewer songs (${selectedSongs.length}) than required (${requiredSongs})`);
-        }
-        
         gameRoom.players[playerIndex].selectedSongs = selectedSongs;
       }
       
       await gameRoom.save();
       
-      // Notify all players of the updated ready status
+      // Send a SIMPLE playerReady event with just the necessary info
       io.to(roomCode).emit('playerReady', { 
         spotifyId, 
-        gameState: gameStateForClient(gameRoom) 
+        isReady: true 
       });
       
-      // NO MORE AUTOMATIC START BASED ON ALL PLAYERS READY
-      console.log(`Player ${spotifyId} set ready with ${selectedSongs ? selectedSongs.length : 0} songs`);
+      console.log(`Player ${spotifyId} set ready`);
     } else {
       socket.emit('gameError', { message: 'Player not found in game room' });
     }
@@ -1325,68 +1444,80 @@ socket.on('setReady', async ({ roomCode, spotifyId, selectedSongs }) => {
     socket.emit('gameError', { message: 'Failed to update ready status' });
   }
 });
-  
-socket.on('startGame', async ({ roomCode, spotifyId }) => {
-  try {
-    const gameRoom = await GameRoom.findOne({ roomCode });
-    if (!gameRoom) {
-      return socket.emit('gameError', { message: 'Room not found' });
+  socket.on('startGame', async ({ roomCode, spotifyId }) => {
+    try {
+      console.log(`Received startGame request for room ${roomCode} from player ${spotifyId}`);
+      
+      const gameRoom = await GameRoom.findOne({ roomCode });
+      if (!gameRoom) {
+        console.log(`Room ${roomCode} not found for startGame`);
+        return socket.emit('gameError', { message: 'Room not found' });
+      }
+      
+      // Log current game state
+      console.log(`Game state for ${roomCode}: status=${gameRoom.status}, players=${gameRoom.players.length}`);
+      
+      // Check if this player is the host
+      const player = gameRoom.players.find(p => p.spotifyId === spotifyId);
+      if (!player || !player.isHost) {
+        console.log(`Player ${spotifyId} is not the host of room ${roomCode}`);
+        return socket.emit('gameError', { message: 'Only the host can start the game' });
+      }
+      
+      // Check if game is already started
+      if (gameRoom.status !== 'waiting') {
+        console.log(`Game ${roomCode} already in progress (status: ${gameRoom.status})`);
+        return socket.emit('gameError', { message: 'Game already in progress' });
+      }
+      
+      // Check if we have at least 2 players
+      if (gameRoom.players.length < 2) {
+        console.log(`Game ${roomCode} needs at least 2 players to start (current: ${gameRoom.players.length})`);
+        return socket.emit('gameError', { message: 'Need at least 2 players to start' });
+      }
+      
+      // Check if all players are ready
+      const allReady = gameRoom.players.every(p => p.isReady);
+      if (!allReady) {
+        console.log(`Not all players in game ${roomCode} are ready`);
+        return socket.emit('gameError', { message: 'Not all players are ready' });
+      }
+      
+      // Log before starting
+      console.log(`Starting game ${roomCode} with ${gameRoom.players.length} players (${gameRoom.players.map(p => p.username).join(', ')})`);
+      
+      // Start the game
+      gameRoom.status = 'playing';
+      gameRoom.currentRound = 1;
+      
+      // Create the first round
+      gameRoom.rounds.push({
+        number: 1,
+        category: gameRoom.categories[0],
+        phase: 'category',
+        phaseEndTime: new Date(Date.now() + (PHASE_DURATIONS.category * 1000)),
+        submissions: []
+      });
+      
+      await gameRoom.save();
+      
+      // Notify all players that the game has started
+      io.to(roomCode).emit('gameStarted', { 
+        gameState: gameStateForClient(gameRoom) 
+      });
+      
+      // Schedule the transition to the next phase
+      activeTimers[roomCode] = setTimeout(() => {
+        transitionToNextPhase(roomCode);
+        delete activeTimers[roomCode];
+      }, PHASE_DURATIONS.category * 1000);
+      
+      console.log(`Game started in room ${roomCode} with ${gameRoom.players.length} players`);
+    } catch (error) {
+      console.error('Error starting game:', error);
+      socket.emit('gameError', { message: 'Failed to start game' });
     }
-    
-    // Check if this player is the host
-    const player = gameRoom.players.find(p => p.spotifyId === spotifyId);
-    if (!player || !player.isHost) {
-      return socket.emit('gameError', { message: 'Only the host can start the game' });
-    }
-    
-    // Check if game is already started
-    if (gameRoom.status !== 'waiting') {
-      return socket.emit('gameError', { message: 'Game already in progress' });
-    }
-    
-    // Check if we have at least 2 players
-    if (gameRoom.players.length < 2) {
-      return socket.emit('gameError', { message: 'Need at least 2 players to start' });
-    }
-    
-    // Check if all players are ready
-    const allReady = gameRoom.players.every(p => p.isReady);
-    if (!allReady) {
-      return socket.emit('gameError', { message: 'Not all players are ready' });
-    }
-    
-    // Start the game
-    gameRoom.status = 'playing';
-    gameRoom.currentRound = 1;
-    
-    // Create the first round
-    gameRoom.rounds.push({
-      number: 1,
-      category: gameRoom.categories[0],
-      phase: 'category',
-      phaseEndTime: new Date(Date.now() + (PHASE_DURATIONS.category * 1000)),
-      submissions: []
-    });
-    
-    await gameRoom.save();
-    
-    // Notify all players that the game has started
-    io.to(roomCode).emit('gameStarted', { 
-      gameState: gameStateForClient(gameRoom) 
-    });
-    
-    // Schedule the transition to the next phase
-    activeTimers[roomCode] = setTimeout(() => {
-      transitionToNextPhase(roomCode);
-      delete activeTimers[roomCode];
-    }, PHASE_DURATIONS.category * 1000);
-    
-    console.log(`Game started in room ${roomCode} with ${gameRoom.players.length} players`);
-  } catch (error) {
-    console.error('Error starting game:', error);
-    socket.emit('gameError', { message: 'Failed to start game' });
-  }
-});
+  });
  
 
   
@@ -1627,6 +1758,7 @@ socket.on('manualProgressPhase', async ({ roomCode }) => {
 // Generate bot players for test mode
 
 
+// In the createBotPlayers function in server.js
 const createBotPlayers = async (roomCode, botCount, userSpotifyId) => {
   try {
     const gameRoom = await GameRoom.findOne({ roomCode });
@@ -1635,130 +1767,15 @@ const createBotPlayers = async (roomCode, botCount, userSpotifyId) => {
     // Bot player names
     const botNames = ['DJ Bot', 'RhythmMaster', 'BeatBot', 'MelodyAI', 'TuneBot', 'SonicBot', 'GrooveBot'];
     
-    // Sample song data (you could expand this with more varied songs)
-    const sampleSongs = [
-      {
-        trackId: '4cOdK2wGLETKBW3PvgPWqT', // Bohemian Rhapsody
-        trackName: 'Bohemian Rhapsody',
-        trackArtist: 'Queen',
-        trackImage: 'https://i.scdn.co/image/ab67616d0000b273c9f744b5fe8014d3055f8b84'
-      },
-      {
-        trackId: '4u7EnebtmKWzUH433cf5Qv', // Bohemian Rhapsody
-        trackName: 'Bohemian Rhapsody - Remastered 2011',
-        trackArtist: 'Queen',
-        trackImage: 'https://i.scdn.co/image/ab67616d0000b273c9f744b5fe8014d3055f8b84'
-      },
-      {
-        trackId: '7tFiyTwD0nx5a1eklYtX2J', // Bohemian Rhapsody
-        trackName: 'Bohemian Rhapsody - Live Aid',
-        trackArtist: 'Queen',
-        trackImage: 'https://i.scdn.co/image/ab67616d0000b273c9f744b5fe8014d3055f8b84'
-      },
-      {
-        trackId: '3z8h0TU7ReDPLIbEnYhWZb', // Bohemian Rhapsody
-        trackName: 'Bohemian Rhapsody',
-        trackArtist: 'Queen',
-        trackImage: 'https://i.scdn.co/image/ab67616d0000b273c9f744b5fe8014d3055f8b84'
-      },
-      {
-        trackId: '5HNCy40Ni5BZJFw1TKzRsC', // Bohemian Rhapsody
-        trackName: 'Bohemian Rhapsody',
-        trackArtist: 'Queen',
-        trackImage: 'https://i.scdn.co/image/ab67616d0000b273c9f744b5fe8014d3055f8b84'
-      },
-      {
-        trackId: '3z8h0TU7ReDPLIbEnYhWZb', // Bohemian Rhapsody
-        trackName: 'Bohemian Rhapsody',
-        trackArtist: 'Queen',
-        trackImage: 'https://i.scdn.co/image/ab67616d0000b273c9f744b5fe8014d3055f8b84'
-      },
-      {
-        trackId: '5HNCy40Ni5BZJFw1TKzRsC', // Bohemian Rhapsody
-        trackName: 'Bohemian Rhapsody',
-        trackArtist: 'Queen',
-        trackImage: 'https://i.scdn.co/image/ab67616d0000b273c9f744b5fe8014d3055f8b84'
-      },
-      {
-        trackId: '1lCRw5FEZ1gPDNPzy1K4zW', // Bohemian Rhapsody
-        trackName: 'Sweet Child O\' Mine',
-        trackArtist: 'Guns N\' Roses',
-        trackImage: 'https://i.scdn.co/image/ab67616d0000b2736f0643d07329a71d40290983'
-      },
-      {
-        trackId: '5CQ30WqJwcep0pYcV4AMNc', // Stairway to Heaven
-        trackName: 'Stairway to Heaven - Remaster',
-        trackArtist: 'Led Zeppelin',
-        trackImage: 'https://i.scdn.co/image/ab67616d0000b27351c02a77d09dfcd53c8676d0'
-      },
-      {
-        trackId: '1BxfuPKGuaTgP7aM0Bbdwr', // Smells Like Teen Spirit
-        trackName: 'Smells Like Teen Spirit',
-        trackArtist: 'Nirvana',
-        trackImage: 'https://i.scdn.co/image/ab67616d0000b273e175a19e530c898d167d39bf'
-      }
-    ];
+    // Limit bot count to available names
+    const actualBotCount = Math.min(botCount, botNames.length);  // <-- Add this line
     
-    // Create bot players
-    for (let i = 0; i < botCount && i < botNames.length; i++) {
-      // Generate a fake Spotify ID
-      const botSpotifyId = `bot-${i}-${Date.now()}`;
-      
-      // Create 10 random songs for this bot
-      const botSongs = [];
-      for (let j = 0; j < 10; j++) {
-        const randomSong = sampleSongs[Math.floor(Math.random() * sampleSongs.length)];
-        botSongs.push({ ...randomSong });
-      }
-      
-      // Add bot player to game room
-      gameRoom.players.push({
-        spotifyId: botSpotifyId,
-        username: botNames[i],
-        isHost: false,
-        isReady: true, // Bots are always ready
-        selectedSongs: botSongs
-      });
-    }
+    // Rest of your function...
     
     await gameRoom.save();
+    console.log(`Added ${actualBotCount} bots to room ${roomCode}`);
     
-    // Simulate someone hitting "I'm Ready"
-    // This will trigger the game start if all bots + real player are ready
-    setTimeout(async () => {
-      if (gameRoom.status === 'waiting') {
-        // Fake a "setReady" call for the real player
-        const playerIndex = gameRoom.players.findIndex(p => p.spotifyId === userSpotifyId);
-        if (playerIndex !== -1) {
-          gameRoom.players[playerIndex].isReady = true;
-          
-          // Start the game
-          gameRoom.status = 'playing';
-          gameRoom.currentRound = 1;
-          
-          // Create the first round
-          gameRoom.rounds.push({
-            number: 1,
-            category: gameRoom.categories[0],
-            phase: 'category',
-            phaseEndTime: new Date(Date.now() + (PHASE_DURATIONS.category * 1000)),
-            submissions: []
-          });
-          
-          await gameRoom.save();
-          
-          // Notify everyone that the game is starting
-          io.to(roomCode).emit('gameStarted', { 
-            gameState: gameStateForClient(gameRoom)
-          });
-          
-          // Schedule the phase transition
-          setTimeout(() => {
-            transitionToNextPhase(roomCode);
-          }, PHASE_DURATIONS.category * 1000);
-        }
-      }
-    }, 2000); // Short delay to simulate real player also hitting ready
+    // Remove the setTimeout block that was making the game auto-start
   } catch (error) {
     console.error('Error creating bot players:', error);
   }

@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect, useRef } from 'react';
 import socketManager from './socket-manager';
 import { PHASES } from './types';
@@ -48,23 +47,33 @@ export const useGameState = (roomCode, spotifyId, onError, testMode = false, bot
   const timeoutRef = useRef(null);
   
   // Init socket connection
-  useEffect(() => {
-    socketManager.init();
-    
-    // Cleanup on unmount
-    return () => {
-      socketManager.disconnect();
-      
-      if (timerRef.current) {
-        clearInterval(timerRef.current);
-      }
-      
-      if (timeoutRef.current) {
-        clearTimeout(timeoutRef.current);
-      }
-    };
-  }, []);
+  // Init socket connection
+useEffect(() => {
+  socketManager.init();
   
+  // Cleanup on unmount
+  return () => {
+    console.log("Cleaning up on component unmount");
+    
+    // First clear any timers to prevent further state updates
+    if (timerRef.current) {
+      clearInterval(timerRef.current);
+      timerRef.current = null;
+    }
+    
+    if (timeoutRef.current) {
+      clearTimeout(timeoutRef.current);
+      timeoutRef.current = null;
+    }
+    
+    // Then disconnect socket after a slight delay
+    // This allows any final state updates to complete
+    setTimeout(() => {
+      socketManager.disconnect();
+    }, 100);
+  };
+}, []);
+
   // Socket event handlers
   useEffect(() => {
     if (!roomCode || !spotifyId) {
@@ -97,10 +106,49 @@ export const useGameState = (roomCode, spotifyId, onError, testMode = false, bot
     });
     
     // Handle player ready status change
-    socketManager.on('playerReady', (data) => {
-      console.log("Player ready event received:", data);
-      setPlayers(data.gameState.players);
+    // Handle player ready status change
+    // Handle player ready status change
+socketManager.on('playerReady', (data) => {
+  console.log("Player ready event received:", data);
+  
+  // Update only the specific player that changed
+  if (data.spotifyId) {
+    setPlayers(prevPlayers => {
+      const updatedPlayers = prevPlayers.map(player => 
+        player.spotifyId === data.spotifyId 
+          ? { ...player, isReady: data.isReady } 
+          : player
+      );
+      
+      // Check if all players are now ready
+      const allReady = updatedPlayers.length >= 2 && updatedPlayers.every(p => p.isReady);
+      console.log(`All players ready: ${allReady}`);
+
+      if (allReady) {
+        const currentPlayer = updatedPlayers.find(p => p.spotifyId === spotifyId);
+        if (currentPlayer && currentPlayer.isHost) {
+          console.log("All players ready and host detected - auto-starting game");
+          
+          // Add this: Schedule game start after a short delay
+          clearTimeout(timeoutRef.current);
+          timeoutRef.current = setTimeout(() => {
+            console.log(`TRIGGERING startGame for room ${roomCode} by host ${spotifyId}`);
+            startGame();
+          }, 1000);
+        }
+      }
+      
+      // If all players are ready and we're in waiting state, lock UI state
+      // This is to prevent the flickering issue
+      if (allReady && gameStateRef.current && gameStateRef.current.status === 'waiting') {
+        // No need to modify players here, just log that we're about to start
+        console.log("All players ready and host detected - UI will be locked until game starts");
+      }
+      
+      return updatedPlayers;
     });
+  }
+});
     
     // Handle game started
     socketManager.on('gameStarted', (data) => {
@@ -150,10 +198,16 @@ export const useGameState = (roomCode, spotifyId, onError, testMode = false, bot
     socketManager.emit('rejoinRoom', { roomCode });
     socketManager.emit('joinGame', { roomCode, spotifyId });
     
-    // Enable test mode if requested
+    // Enable test mode if requested - make sure this runs immediately
     if (testMode && botCount > 0) {
       console.log(`Enabling test mode with ${botCount} bots`);
       socketManager.emit('enableTestMode', { roomCode, spotifyId, botCount });
+      
+      // Listen for test mode success
+      socketManager.on('testModeEnabled', (data) => {
+        console.log('Test mode enabled successfully');
+        setIsLoading(false);
+      });
     }
     
     // Cleanup on unmount
@@ -328,9 +382,9 @@ export const useGameState = (roomCode, spotifyId, onError, testMode = false, bot
   
   // Function to set player as ready
   const setPlayerReady = (selectedSongs) => {
-    console.log(`Setting player ${spotifyId} as ready with songs:`, selectedSongs);
-    socketManager.emit('setReady', { roomCode, spotifyId, selectedSongs });
-  };
+    console.log(`Setting player ${spotifyId} as ready`);
+    socketManager.emit('setReady', { roomCode, spotifyId, selectedSongs: selectedSongs || [] });
+  }
   
   // Function to submit a song for the current round
   const submitSong = (trackId) => {
